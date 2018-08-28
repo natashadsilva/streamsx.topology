@@ -4,6 +4,9 @@
  */
 package com.ibm.streamsx.topology.spl;
 
+import static com.ibm.streamsx.topology.spl.SPLStreamImpl.newSPLStream;
+import static java.util.Objects.requireNonNull;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -14,16 +17,17 @@ import com.ibm.streams.operator.StreamSchema;
 import com.ibm.streams.operator.Tuple;
 import com.ibm.streamsx.topology.TStream;
 import com.ibm.streamsx.topology.TWindow;
+import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.TopologyElement;
 import com.ibm.streamsx.topology.builder.BInputPort;
 import com.ibm.streamsx.topology.builder.BOperatorInvocation;
-import com.ibm.streamsx.topology.builder.BOutputPort;
 import com.ibm.streamsx.topology.function.BiFunction;
 import com.ibm.streamsx.topology.function.Function;
+import com.ibm.streamsx.topology.function.Supplier;
 import com.ibm.streamsx.topology.internal.core.JavaFunctional;
-import com.ibm.streamsx.topology.internal.core.TypeDiscoverer;
-import com.ibm.streamsx.topology.internal.functional.ops.FunctionConvertToSPL;
-import com.ibm.streamsx.topology.internal.spljava.Schemas;
+import com.ibm.streamsx.topology.internal.core.JavaFunctionalOps;
+import com.ibm.streamsx.topology.internal.logic.LogicUtils;
+import com.ibm.streamsx.topology.internal.messages.Messages;
 
 /**
  * Utilities for SPL attribute schema streams.
@@ -43,11 +47,44 @@ public class SPLStreams {
      */
     public static SPLStream subscribe(TopologyElement te, String topic,
             StreamSchema schema) {
+    	return _subscribe(te, topic, schema);
+    }
 
+    /**
+     * Subscribe to an {@link SPLStream} published by topic.
+     * 
+     * Supports {@code topic} as a submission time parameter, for example
+     * using the topic defined by the submission parameter {@code eventTopic}.:
+     * 
+     * <pre>
+     * <code>
+     * Supplier<String> topicParam = topology.createSubmissionParameter("eventTopic", String.class);
+     * SPLStream events = SPLStreams.subscribe(topology, topicParam, schema);
+     * </code>
+     * </pre>
+     * 
+     * @param te
+     *            Topology the stream will be contained in.
+     * @param topic
+     *            Topic to subscribe to.
+     * @param schema
+     *            SPL Schema of the published stream.
+     * @return Stream containing tuples for the published topic.
+     * 
+     * @see Topology#createSubmissionParameter(String, Class)
+     * @see Topology#createSubmissionParameter(String, Object)
+     * 
+     * @since 1.8
+     */
+    public static SPLStream subscribe(TopologyElement te, Supplier<String> topic, StreamSchema schema) {
+    	return _subscribe(te, topic, schema);
+    }
+
+    private static SPLStream _subscribe(TopologyElement te, Object topic, StreamSchema schema) {
         Map<String, Object> params = new HashMap<>();
-
-        params.put("topic", topic);
-        params.put("streamType", schema);
+                
+        params.put("topic", requireNonNull(topic));
+        params.put("streamType", requireNonNull(schema));
 
         SPLStream stream = SPL.invokeSource(te,
                 "com.ibm.streamsx.topology.topic::Subscribe",
@@ -55,7 +92,7 @@ public class SPLStreams {
 
         return stream;
     }
-
+    
     /**
      * Convert a {@code Stream} to an {@code SPLStream}. For each tuple
      * {@code t} on {@code stream}, the returned stream will contain a tuple
@@ -99,18 +136,14 @@ public class SPLStreams {
             BiFunction<T, OutputTuple, OutputTuple> converter,
             StreamSchema schema) {
         
-        String opName = converter.getClass().getSimpleName();
-        if (opName.isEmpty()) {
-            opName = "SPLConvert" +  TypeDiscoverer.getTupleName(stream.getTupleType());
-        }
+        String opName = LogicUtils.functionName(converter);
 
         BOperatorInvocation convOp = JavaFunctional.addFunctionalOperator(
-                stream, opName, FunctionConvertToSPL.class, converter);
+                stream, opName, JavaFunctionalOps.CONVERT_SPL_KIND, converter);
         @SuppressWarnings("unused")
         BInputPort inputPort = stream.connectTo(convOp, true, null);
 
-        BOutputPort convertedTuples = convOp.addOutput(schema);
-        return new SPLStreamImpl(stream, convertedTuples);
+        return newSPLStream(stream, convOp, schema, true);
     }
 
     /**
@@ -155,8 +188,7 @@ public class SPLStreams {
 
         Attribute attribute = stream.getSchema().getAttribute(attributeName);
         if (attribute == null) {
-            throw new IllegalArgumentException("Atttribute " + attributeName + " not present in SPL schema "
-                   + stream.getSchema().getLanguageType());
+            throw new IllegalArgumentException(Messages.getString("SPL_ATTRIBUTE_NOT_PRESENT", attributeName, stream.getSchema().getLanguageType()));
         }
         final int attributeIndex = attribute.getIndex();
         return stream.convert(new Function<Tuple, String>() {
@@ -187,7 +219,7 @@ public class SPLStreams {
                         v2.setString(0, v1);
                         return v2;
                     }
-                }, Schemas.STRING);
+                }, SPLSchemas.STRING);
     }
 
     /**

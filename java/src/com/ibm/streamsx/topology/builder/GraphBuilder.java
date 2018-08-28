@@ -6,14 +6,22 @@ package com.ibm.streamsx.topology.builder;
 
 import static com.ibm.streamsx.topology.builder.BVirtualMarker.END_LOW_LATENCY;
 import static com.ibm.streamsx.topology.builder.BVirtualMarker.LOW_LATENCY;
+import static com.ibm.streamsx.topology.builder.BVirtualMarker.UNION;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.KIND_CLASS;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_JAVA;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_SPL;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_FUNCTIONAL;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_SPL;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_VIRTUAL;
+import static com.ibm.streamsx.topology.internal.core.JavaFunctionalOps.NS_COLON;
+import static com.ibm.streamsx.topology.internal.core.JavaFunctionalOps.PASS_KIND;
 import static com.ibm.streamsx.topology.internal.graph.GraphKeys.CFG_STREAMS_VERSION;
 import static com.ibm.streamsx.topology.internal.graph.GraphKeys.NAME;
 import static com.ibm.streamsx.topology.internal.graph.GraphKeys.NAMESPACE;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
+import static com.ibm.streamsx.topology.spi.builder.Properties.Graph.CONFIG;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -21,26 +29,21 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.ibm.json.java.JSONArray;
-import com.ibm.json.java.JSONObject;
-import com.ibm.json.java.OrderedJSONObject;
-import com.ibm.streams.flow.declare.OperatorGraph;
-import com.ibm.streams.flow.declare.OperatorGraphFactory;
-import com.ibm.streams.operator.Operator;
-import com.ibm.streams.operator.version.Product;
-import com.ibm.streamsx.topology.context.StreamsContext;
 import com.ibm.streamsx.topology.function.Consumer;
 import com.ibm.streamsx.topology.function.Supplier;
-import com.ibm.streamsx.topology.generator.operator.OpProperties;
+import com.ibm.streamsx.topology.generator.port.PortProperties;
 import com.ibm.streamsx.topology.generator.spl.GraphUtilities;
 import com.ibm.streamsx.topology.generator.spl.GraphUtilities.Direction;
 import com.ibm.streamsx.topology.generator.spl.GraphUtilities.VisitController;
-import com.ibm.streamsx.topology.internal.functional.ops.PassThrough;
-import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
-import com.ibm.streamsx.topology.internal.json4j.JSON4JUtilities;
-import com.ibm.streamsx.topology.tuple.JSONAble;
+import com.ibm.streamsx.topology.internal.core.JavaFunctionalOps;
+import com.ibm.streamsx.topology.internal.core.SubmissionParameterFactory;
+import com.ibm.streamsx.topology.internal.functional.SubmissionParameter;
+import com.ibm.streamsx.topology.internal.messages.Messages;
+import com.ibm.streamsx.topology.internal.streams.Util;
 
 /**
  * Low-level graph builder. GraphBuilder provides a layer on top of
@@ -53,56 +56,55 @@ import com.ibm.streamsx.topology.tuple.JSONAble;
  * , which can then be used to generate SPL using
  * {@link com.ibm.streamsx.topology.generator.spl.SPLGenerator}.
  * 
- * If the graph only contains Java operators and functional operators, then it
- * may be executed using its {@code OperatorGraph} from {@link #graph()}.
  * 
  */
 public class GraphBuilder extends BJSONObject {
 
-    private final OperatorGraph graph = OperatorGraphFactory.newGraph();
-
     private final List<BOperator> ops = new ArrayList<>();
     
-    private final JSONObject config = new OrderedJSONObject();
+    private final JsonObject config = new JsonObject();
+    
+    private String functionalNamespaceColon;
 
-    private final JSONObject params = new OrderedJSONObject();
+    /**
+     * Submission parameters.
+     */
+    private final JsonObject params = new JsonObject();
     
     public GraphBuilder(String namespace, String name) {
         super();
 
-        json().put(NAMESPACE, namespace);
-        json().put(NAME, name);
-        json().put("public", true);
-        json().put("config", config);
-        json().put("parameters", params);
-        
-        // The version of IBM Streams being used to build
-        // the topology
-        config.put(CFG_STREAMS_VERSION, Product.getVersion().toString());
-    }
+        _json().addProperty(NAMESPACE, namespace);
+        _json().addProperty(NAME, name);
+        _json().addProperty("public", true);
+        _json().add(CONFIG, config);
+        _json().add("parameters", params);
 
-   public BOperatorInvocation addOperator(Class<? extends Operator> opClass,
-            Map<String, ? extends Object> params) {
-        final BOperatorInvocation op = new BOperatorInvocation(this, opClass,
-                params);
-        ops.add(op);
-         return op;
+        getConfig().addProperty(CFG_STREAMS_VERSION, Util.productVersion());
+        // Indicate how the graph was generated.
+        getConfig().addProperty(MODEL, MODEL_FUNCTIONAL);
+        getConfig().addProperty(LANGUAGE, LANGUAGE_JAVA);
     }
    
    private final Map<String,Integer> usedNames = new HashMap<>();
+   private final AtomicInteger idGen = new AtomicInteger();
    
-   public BOperatorInvocation addOperator(
-           String name,
-           Class<? extends Operator> opClass,         
-           Map<String, ? extends Object> params) {
-       
-       name = userSuppliedName(name);
-       
-       final BOperatorInvocation op = new BOperatorInvocation(this, name, opClass,
-               params);
-       ops.add(op);
+    public BOperatorInvocation addOperator(String name, String kind, Map<String, ? extends Object> params) {
+
+        kind = correctFunctionalNamespace(kind);
+        final BOperatorInvocation op = new BOperatorInvocation(this, kind, params);
+        ops.add(op);
+        
+        renameOp(op, name);
         return op;
-   }
+    }
+    
+    public void renameOp(BOperatorInvocation op, String name) {
+        if (name.isEmpty())
+            return;
+
+        op.rename(name);
+    }
    
    String userSuppliedName(String name) {
        if (usedNames.containsKey(name)) {
@@ -113,6 +115,14 @@ public class GraphBuilder extends BJSONObject {
            usedNames.put(name, 1);
        }
        return name;
+   }
+   
+   /**
+    * Generate a unique (within the graph) identifer internal to
+    * graph generation.
+    */
+   public String uniqueId(String prefix) {
+       return prefix + Integer.toString(idGen.getAndIncrement());
    }
     
     public BOutput lowLatency(BOutput parent){
@@ -125,29 +135,24 @@ public class GraphBuilder extends BJSONObject {
     }
 
     public boolean isInLowLatencyRegion(BOutput output) {
-        BOperator op;
-        if (output instanceof BUnionOutput)
-            op = ((BUnionOutput) output).operator();
-        else
-            op = ((BOutputPort) output).operator();
-        return isInLowLatencyRegion(op);
+        return isInLowLatencyRegion(output.operator());
     }
     
     public boolean isInLowLatencyRegion(BOperator... operators) {
         // handle nested low latency regions
-        JSONObject graph = complete();
+        JsonObject graph = _complete();
         final VisitController visitController =
                 new VisitController(Direction.UPSTREAM);
         final int[] openRegionCount = { 0 };
         for (BOperator operator : operators) {
-            JSONObject jop = operator.complete();
+            JsonObject jop = operator._complete();
             GraphUtilities.visitOnce(visitController,
-                    Collections.singleton(JSON4JUtilities.gson(jop)), JSON4JUtilities.gson(graph),
+                    Collections.singleton(jop), graph,
                 new Consumer<JsonObject>() {
                     private static final long serialVersionUID = 1L;
                     @Override
                     public void accept(JsonObject jo) {
-                        String kind = GsonUtilities.jstring(jo, "kind");
+                        String kind = jstring(jo, "kind");
                         if (LOW_LATENCY.kind().equals(kind)) {
                             if (openRegionCount[0] <= 0)
                                 visitController.setStop();
@@ -172,20 +177,39 @@ public class GraphBuilder extends BJSONObject {
     }
 
     public BOutput addUnion(Set<BOutput> outputs) {
-        BOperator op = addVirtualMarkerOperator(BVirtualMarker.UNION);
-        return new BUnionOutput(op, outputs);
+        
+        assert outputs.size() >= 2;
+        BOutput[] outs = new BOutput[outputs.size()];
+        outputs.toArray(outs);
+        
+        BOperatorInvocation op = addOperator(UNION.name(), UNION.kind(), null);
+        op._json().addProperty("marker", true);
+        op._json().addProperty(KIND_CLASS, JavaFunctionalOps.PASS_CLASS);
+        op.setModel(MODEL_VIRTUAL, LANGUAGE_JAVA);
+
+        // Create the input port that consumes the output
+        final BInputPort input = op.inputFrom(outs[0], null);
+        
+        for (int i = 1; i < outs.length; i++)
+            op.inputFrom(outs[i], input);
+
+        // Create the output port.
+        return op.addOutput(input._schema());
     }
 
     /**
      * Add a marker operator, that is actually a PassThrough in OperatorGraph,
      * so that we can run this graph locally with a single thread.
      */
-    public BOutput parallel(BOutput parallelize, Supplier<Integer> width) {
+    public BOutput parallel(BOutput parallelize, String routing, Supplier<Integer> width) {
         BOutput parallelOutput = addPassThroughMarker(parallelize, BVirtualMarker.PARALLEL, true);
+        parallelOutput._json().addProperty(PortProperties.ROUTING, routing);
         if (width.get() != null)
-            parallelOutput.json().put("width", width.get());
-        else
-            parallelOutput.json().put("width", ((JSONAble) width).toJSON());
+            parallelOutput._json().addProperty(PortProperties.WIDTH, width.get());
+        else {
+            SubmissionParameter<?> spw = (SubmissionParameter<?>) width;
+            parallelOutput._json().add(PortProperties.WIDTH, SubmissionParameterFactory.asJSON(spw));
+        }
         return parallelOutput;
     }
 
@@ -199,12 +223,13 @@ public class GraphBuilder extends BJSONObject {
 
     public BOutput addPassThroughMarker(BOutput output, BVirtualMarker virtualMarker,
             boolean createRegion) {
-        BOperatorInvocation op = addOperator(PassThrough.class, null);
-        op.json().put("marker", true);
-        op.json().put("kind", virtualMarker.kind());
+        BOperatorInvocation op = addOperator(virtualMarker.name(), virtualMarker.kind(), null);
+        op._json().addProperty("marker", true);
+        op._json().addProperty(KIND_CLASS, JavaFunctionalOps.PASS_CLASS);
+        op.setModel(MODEL_VIRTUAL, LANGUAGE_JAVA);
 
         if (createRegion) {
-            final String regionName = op.op().getName();
+            final String regionName = op.name();
             regionMarkers.put(regionName, virtualMarker.kind());
             op.addRegion(regionName);
         }
@@ -213,69 +238,27 @@ public class GraphBuilder extends BJSONObject {
         BInputPort input = op.inputFrom(output, null);
 
         // Create the output port.
-        return op.addOutput(input.port().getStreamSchema());
+        return op.addOutput(input._schema());
     }
     
     public BOutput addPassThroughOperator(BOutput output) {
-        BOperatorInvocation op = addOperator(PassThrough.class, null);
+        BOperatorInvocation op = addOperator("Pass",
+                correctFunctionalNamespace(PASS_KIND), null);
+        op.setModel(MODEL_SPL, LANGUAGE_JAVA);
         // Create the input port that consumes the output
         BInputPort input = op.inputFrom(output, null);
         // Create the output port.
-        return op.addOutput(input.port().getStreamSchema());
+        return op.addOutput(input._schema());
     }
 
-    public BOperator addVirtualMarkerOperator(BVirtualMarker kind) {
-        final BMarkerOperator op = new BMarkerOperator(this, kind);
-        ops.add(op);
-        return op;
-    }
-
-    public BOperatorInvocation addSPLOperator(String kind,
-            Map<String, ? extends Object> params) {
-        final BOperatorInvocation op = new BOperatorInvocation(this, params);
-        op.json().put("kind", kind);
-
-        json().put(MODEL, MODEL_SPL);
-        json().put(LANGUAGE, LANGUAGE_SPL);
-
-        ops.add(op);
-        return op;
-    }
     public BOperatorInvocation addSPLOperator(String name, String kind,
             Map<String, ? extends Object> params) {
-        name = userSuppliedName(name);
-        final BOperatorInvocation op = new BOperatorInvocation(this, name, params);
-        op.json().put("kind", kind);
-        
-        json().put(MODEL, MODEL_SPL);
-        json().put(LANGUAGE, LANGUAGE_SPL);
+        final BOperatorInvocation op = new BOperatorInvocation(this, kind, params);      
+        op.setModel(MODEL_SPL, LANGUAGE_SPL);
+        renameOp(op, name);
         
         ops.add(op);
         return op;
-    }
-    
-    /**
-     * @throws IllegalStateException if the topology can't run in 
-     *          StreamsContext.Type.EMBEDDED mode.
-     */
-    public void checkSupportsEmbeddedMode() throws IllegalStateException {
-        for (BOperator op : ops) {
-            if (BVirtualMarker.isVirtualMarker((String) op.json().get("kind")))
-                continue;
-            
-            // note: runtime==null for markers
-            String runtime = (String) op.json().get(OpProperties.MODEL);
-            String language = (String) op.json().get(OpProperties.LANGUAGE);
-            
-            if (!MODEL_SPL.equals(runtime) || !LANGUAGE_JAVA.equals(language)) {
-                    String namespace = (String) json().get(NAMESPACE);
-                    String name = (String) json().get(NAME);
-                    throw new IllegalStateException(
-                            "Topology '"+namespace+"."+name+"'"
-                            + " does not support "+StreamsContext.Type.EMBEDDED+" mode:"
-                            + " the topology contains non-Java operator:" + op.json().get("kind"));
-            }
-        }
     }
 
     private Map<String, String> regionMarkers = new HashMap<>();
@@ -283,25 +266,20 @@ public class GraphBuilder extends BJSONObject {
     public String getRegionMarker(String name) {
         return regionMarkers.get(name);
     }
-
-    public OperatorGraph graph() {
-        return graph;
-    }
     
-    public JSONObject getConfig() {
+    public JsonObject getConfig() {
         return config;
     }
-
-    @Override
-    public JSONObject complete() {
-        JSONObject json = json();
-        JSONArray oa = new JSONArray(ops.size());
+    
+    public JsonObject _complete() {
+        JsonObject json = super._complete();
+        
+        JsonArray oa = new JsonArray();
+        json.add("operators", oa);
         for (BOperator op : ops) {
-            oa.add(op.complete());
+            oa.add(op._complete());
         }
-
-        json.put("operators", oa);
-
+                
         return json;
     }
 
@@ -329,9 +307,26 @@ public class GraphBuilder extends BJSONObject {
      * @param name the submission parameter name
      * @param jo the SubmissionParameter parameter value object
      */
-    public void createSubmissionParameter(String name, JSONObject jo) {
-        if (params.containsKey(name))
-            throw new IllegalArgumentException("name is already defined");
-        params.put(name, jo);
+    public void createSubmissionParameter(String name, JsonObject jo) {
+        if (params.has(name))
+            throw new IllegalArgumentException(Messages.getString("BUILDER_NAME_ALREADY_DEFINED", name));
+        params.add(name, jo);
+    }
+
+    /**
+     * Sets the namespace to be used for functional operators
+     * for this topology.
+     * @param namespace Namespace for functional java operators.
+     */
+    public void setFunctionalNamespace(String namespace) {
+        functionalNamespaceColon = namespace + "::";   
+    }
+    
+    private String correctFunctionalNamespace(String kind) {
+        if (functionalNamespaceColon != null) {
+            if (kind.startsWith(NS_COLON))
+                kind = kind.replace(NS_COLON, functionalNamespaceColon);
+        }
+        return kind;
     }
 }

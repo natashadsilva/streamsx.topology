@@ -4,7 +4,11 @@
  */
 package com.ibm.streamsx.topology.generator.spl;
 
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.HASH_ADDER;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.KIND;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.START_OP;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.array;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jboolean;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.objectArray;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.stringArray;
@@ -25,6 +29,7 @@ import com.google.gson.JsonPrimitive;
 import com.google.gson.JsonSyntaxException;
 import com.ibm.streamsx.topology.builder.BVirtualMarker;
 import com.ibm.streamsx.topology.function.Consumer;
+import com.ibm.streamsx.topology.generator.operator.OpProperties;
 import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 
 public class GraphUtilities {
@@ -37,9 +42,13 @@ public class GraphUtilities {
                 // should this be kind?
                 String name = jstring(op, "name");
                 
-                if(name != null && !name.startsWith("$"))
+                if(name != null && !name.startsWith("$")) {
                     starts.add(op);
+                    return;
                 }
+            }
+            if (jboolean(op, START_OP))
+                starts.add(op);
             });
         
         return starts;
@@ -55,8 +64,8 @@ public class GraphUtilities {
     /**
      * Get the kind of an operator.
      */
-    static String kind(JsonObject op) {
-        String kind = jstring(op, "kind");
+    public static String kind(JsonObject op) {
+        String kind = jstring(op, KIND);
         assert kind != null;
         return kind;
     }
@@ -66,14 +75,45 @@ public class GraphUtilities {
     static boolean isKind(JsonObject op, String kind) {
         return kind.equals(kind(op));
     }
-    
-    static Set<JsonObject> findOperatorByKind(BVirtualMarker virtualMarker,
-                JsonObject graph) {
 
-        Set<JsonObject> kindOperators = new HashSet<>();
+    /**
+     * Is an operator a HashAdder created for a partitioned parallel region.
+     */
+    static boolean isHashAdder(JsonObject op) {
+        return jboolean(op, HASH_ADDER);
+    }
+
+    /**
+     * Add an operator parameter, replacing the existing value if it exists.
+     * Handles the case where no parameters exist.
+     */
+    static void addOpParameter(JsonObject op, String name, JsonObject value) {
+        JsonObject params = GsonUtilities.objectCreate(op, "parameters");
+        params.add(name, value);
+    }
+    
+    static List<JsonObject> findOperatorByKind(BVirtualMarker virtualMarker,
+            JsonObject graph) {
+
+        List<JsonObject> kindOperators = new ArrayList<>();
         
         operators(graph, op -> {
             if (virtualMarker.isThis(kind(op)))
+                kindOperators.add(op);
+        });
+
+        return kindOperators;
+    }
+    
+    /**
+     * Find all (non-virtual) operators of specific kinds (by string).
+     */
+    static Set<JsonObject> findOperatorsByKinds(final JsonObject graph, final Set<String> kinds) {
+
+        Set<JsonObject> kindOperators = new HashSet<>();
+
+        operators(graph, op -> {
+            if (kinds.contains(kind(op)))
                 kindOperators.add(op);
         });
 
@@ -103,12 +143,18 @@ public class GraphUtilities {
             JsonObject graph) {    
         
         Set<JsonObject> children = new HashSet<>();
-                
-        outputConnections(visitOp, inputPort -> {
-            operators(graph, op -> inputs(op, input-> {
-                if (jstring(input, "name").equals(inputPort))
+        Set<String> oportNames = new HashSet<>();
+        
+        // Create list of output port names
+        GraphUtilities.outputs(visitOp, output -> {
+            oportNames.add(jstring(output, "name"));
+        });
+        
+        operators(graph, op -> {
+            GraphUtilities.inputConnections(op, oportName -> {
+                if(oportNames.contains(oportName))
                     children.add(op);
-            }));
+            });
         });
 
         return children;
@@ -216,10 +262,8 @@ public class GraphUtilities {
         for (JsonObject iso : operators) {
 
             // Get parents and children of operator
-            Set<JsonObject> operatorParents = GraphUtilities.getUpstream(iso,
-                    graph);
-            Set<JsonObject> operatorChildren = GraphUtilities.getDownstream(iso,
-                    graph);
+            Set<JsonObject> operatorParents = getUpstream(iso, graph);
+            Set<JsonObject> operatorChildren = getDownstream(iso, graph);
 
             
             JsonArray operatorOutputs = array(iso, "outputs");
@@ -390,8 +434,8 @@ public class GraphUtilities {
         Direction direction = visitController.direction();
         Set<BVirtualMarker> boundaries = visitController.markerBoundaries();
         
-        Set<JsonObject> parents = GraphUtilities.getUpstream(op, graph);
-        Set<JsonObject> children = GraphUtilities.getDownstream(op, graph);
+        Set<JsonObject> parents = getUpstream(op, graph);
+        Set<JsonObject> children = getDownstream(op, graph);
         removeVisited(parents, visited);
         removeVisited(children, visited);
 
@@ -400,10 +444,9 @@ public class GraphUtilities {
             Set<JsonObject> allOperatorChildren = new HashSet<>();
             List<JsonObject> operatorParents = new ArrayList<>();
             for (JsonObject parent : parents) {
-                if (equalsAny(boundaries, jstring(parent, "kind"))) {
+                if (equalsAny(boundaries, jstring(parent, OpProperties.KIND))) {
                     operatorParents.add(parent);
-                    allOperatorChildren.addAll(GraphUtilities.getDownstream(parent,
-                            graph));
+                    allOperatorChildren.addAll(getDownstream(parent, graph));
                 }
             }
             visited.addAll(operatorParents);
@@ -422,8 +465,7 @@ public class GraphUtilities {
             for (JsonObject child : children) {
                 if (equalsAny(boundaries, jstring(child, "kind"))) {
                     childrenToRemove.add(child);
-                    allOperatorParents.addAll(GraphUtilities.getUpstream(child,
-                            graph));
+                    allOperatorParents.addAll(getUpstream(child, graph));
                 }
             }
             visited.addAll(childrenToRemove);
@@ -471,8 +513,35 @@ public class GraphUtilities {
         JsonObject output = outputs.get(index).getAsJsonObject();
         return jstring(output, "name");
 
-    }  
-    
+    }
+
+    /**
+     * @return the output port schema type
+     */
+    static String getOutputPortType(JsonObject op, int index) {
+        JsonArray outputs = op.get("outputs").getAsJsonArray();
+        JsonObject output = outputs.get(index).getAsJsonObject();
+        return jstring(output, "type");
+    }
+
+    /**
+     * set the output port schema type to the given value
+     */
+    static void setOutputPortType(JsonObject op, int index, String schema) {
+        JsonArray outputs = op.get("outputs").getAsJsonArray();
+        JsonObject output = outputs.get(index).getAsJsonObject();
+        output.addProperty("type", schema);
+    }
+
+    /**
+     * set the input port schema type to the given value
+     */
+    static void setInputPortType(JsonObject op, int index, String schema) {
+        JsonArray inputs = op.get("inputs").getAsJsonArray();
+        JsonObject input = inputs.get(index).getAsJsonObject();
+        input.addProperty("type", schema);
+    }
+
     /**
      * Add an operator before another operator.
      * @param op Operator the new operator is to be added before.
@@ -552,6 +621,120 @@ public class GraphUtilities {
             if (inputConns.get(i).getAsString().equals(oportName))
                 inputConns.set(i, new JsonPrimitive(opOportName));
         }
+    }
+
+    /**
+     * Find the first occurrence of the {@code iportName} in all {@code oports}
+     * connections, and remove the connection.
+     *
+     * @param oports    output ports of an operator
+     * @param iportName the target input port name
+     * @return the first output port that was connected to the target input port
+     */
+    static private JsonObject findOutputPortAndRemoveConnection(
+            JsonArray oports, String iportName) {
+	    return findOutputPort(oports, iportName, true);
+    }
+
+    /**
+     * Find the first occurrence of the {@code iportName} in all {@code oports}
+     * connections.
+     *
+     * @param oports    output ports of an operator
+     * @param iportName the target input port name
+     * @return the first output port that is connected to the target input port
+     */
+    static private JsonObject findOutputPort(JsonArray oports, String iportName) {
+	    return findOutputPort(oports, iportName, false);
+    }
+
+    /**
+     *
+     * @param oports        output ports of an operator
+     * @param iportName     the target input port name
+     * @param shouldRemove  true if the target connection should be removed
+     * @return the first output port that is connected to the target input port
+     */
+    static private JsonObject findOutputPort(
+            JsonArray oports, String iportName, boolean shouldRemove) {
+        for (JsonElement oport: oports) {
+            JsonArray outConns = oport.getAsJsonObject().get("connections").getAsJsonArray();
+            for (JsonElement outConn: outConns) {
+                if (outConn.getAsString().equals(iportName)) {
+                    if (shouldRemove) {
+                        outConns.remove(outConn);
+                    }
+                    return oport.getAsJsonObject();
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Move the operator upstream, i.e., detach the operator from its
+     * parent and relocate the operator to be its grand parent's child.
+     * This method requires the operator has only one parent and one grand
+     * parent.
+     * <BR>
+     * <pre><code>
+     *     grandParent -> parent -> op
+     * </code></pre>
+     * <BR>
+     * becomes
+     * <BR>
+     * <pre><code>
+     *     grandParent -> parent
+     *                \-> op
+     * </code></pre>
+     *
+     * @param op    the operator to be relocated
+     * @param graph the entire graph
+     */
+    static void moveOperatorUpstream(JsonObject op, JsonObject graph) {
+        // ensure that op has only one parent
+        Set<JsonObject> parents = getUpstream(op, graph);
+        assert parents.size() == 1;
+        JsonObject parent = parents.iterator().next();
+
+        // ensure that op has only one grand parent
+        Set<JsonObject> grandParents = getUpstream(parent, graph);
+        assert grandParents.size() == 1;
+        JsonObject grandParent = grandParents.iterator().next();
+
+        JsonArray grandParentOports = grandParent.get("outputs").getAsJsonArray();
+        JsonObject parentIport = parent.get("inputs").getAsJsonArray().get(0).getAsJsonObject();
+        JsonArray parentOports = parent.get("outputs").getAsJsonArray();
+        JsonObject opIport = op.get("inputs").getAsJsonArray().get(0).getAsJsonObject();
+
+        // 1. find the connection from grandParent to parent
+        String parentIportName = jstring(parentIport, "name");
+
+        // grandParent's output port to be connected to op
+        JsonObject grandParentOport = findOutputPort(grandParentOports, parentIportName);
+        assert grandParentOport != null;
+
+        // 2. find the connection from parent to op, and remove the connection
+        String opIportName = jstring(opIport, "name");
+
+        // parent's output port that is detached from op
+        JsonObject parentOport = findOutputPortAndRemoveConnection(parentOports, opIportName);
+        assert parentOport != null;
+
+        // 3. connect op to grandParent
+
+        // get parent's and grandParent's output port name
+        String grandParentOportName = jstring(grandParentOport, "name");
+        String parentOportName = jstring(parentOport, "name");
+
+        // set op's only input connection to grandParent's output port name
+        JsonArray opIConns = opIport.get("connections").getAsJsonArray();
+        assert opIConns.get(0).getAsString().equals(parentOportName);
+        opIConns.set(0, new JsonPrimitive(grandParentOportName));
+
+        // add op's input port name to grandParent's connections
+        JsonArray grandParentOConns = grandParentOport.get("connections").getAsJsonArray();
+        grandParentOConns.add(new JsonPrimitive(opIportName));
     }
     
     /**

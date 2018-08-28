@@ -4,6 +4,12 @@
  */
 package com.ibm.streamsx.topology.spl;
 
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.KIND_CLASS;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_JAVA;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_SPL;
+import static com.ibm.streamsx.topology.spl.OpAPIUtil.fixParameters;
+import static com.ibm.streamsx.topology.spl.SPLStreamImpl.newSPLStream;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -11,6 +17,7 @@ import java.util.Map;
 
 import com.ibm.streams.operator.Operator;
 import com.ibm.streams.operator.StreamSchema;
+import com.ibm.streams.operator.model.Namespace;
 import com.ibm.streams.operator.model.PrimitiveOperator;
 import com.ibm.streamsx.topology.TSink;
 import com.ibm.streamsx.topology.Topology;
@@ -18,6 +25,7 @@ import com.ibm.streamsx.topology.TopologyElement;
 import com.ibm.streamsx.topology.builder.BOperatorInvocation;
 import com.ibm.streamsx.topology.internal.core.SourceInfo;
 import com.ibm.streamsx.topology.internal.core.TSinkImpl;
+import com.ibm.streamsx.topology.internal.messages.Messages;
 
 /**
  * Integration between Java topologies and SPL Java primitive operators.
@@ -58,11 +66,13 @@ public class JavaPrimitive {
 
         BOperatorInvocation op = input.builder().addOperator(
                 getInvocationName(opClass),
-                opClass, params);
+                getKind(opClass), fixParameters(params));
+        op.setModel(MODEL_SPL, LANGUAGE_JAVA);
+        op._json().addProperty(KIND_CLASS, opClass.getCanonicalName());
         SourceInfo.setSourceInfo(op, JavaPrimitive.class);
         SPL.connectInputToOperator(input, op);
 
-        return new SPLStreamImpl(input, op.addOutput(outputSchema));
+        return newSPLStream(input, op, outputSchema, true);
     }
     
     /**
@@ -96,7 +106,9 @@ public class JavaPrimitive {
         
         BOperatorInvocation op = te.builder().addOperator(
                 getInvocationName(opClass),
-                opClass, params);
+                getKind(opClass), fixParameters(params));
+        op.setModel(MODEL_SPL, LANGUAGE_JAVA);
+        op._json().addProperty(KIND_CLASS, opClass.getCanonicalName());
         SourceInfo.setSourceInfo(op, JavaPrimitive.class);
         
         if (inputs != null && !inputs.isEmpty()) {
@@ -109,7 +121,7 @@ public class JavaPrimitive {
         
         List<SPLStream> streams = new ArrayList<>(outputSchemas.size());
         for (StreamSchema outputSchema : outputSchemas)
-            streams.add(new SPLStreamImpl(te, op.addOutput(outputSchema)));
+            streams.add(newSPLStream(te, op, outputSchema, outputSchemas.size() == 1));
             
         return streams;
     }
@@ -131,7 +143,9 @@ public class JavaPrimitive {
 
         BOperatorInvocation sink = input.builder().addOperator(
                 getInvocationName(opClass),
-                opClass, params);
+                getKind(opClass), fixParameters(params));
+        sink.setModel(MODEL_SPL, LANGUAGE_JAVA);
+        sink._json().addProperty(KIND_CLASS, opClass.getCanonicalName());
         SourceInfo.setSourceInfo(sink, JavaPrimitive.class);
         SPL.connectInputToOperator(input, sink);
         return new TSinkImpl(input.topology(), sink);
@@ -157,17 +171,46 @@ public class JavaPrimitive {
         
         BOperatorInvocation source = te.builder().addOperator(
                 getInvocationName(opClass),
-                opClass, params);
+                getKind(opClass), fixParameters(params));
+        source.setModel(MODEL_SPL, LANGUAGE_JAVA);
+        source._json().addProperty(KIND_CLASS, opClass.getCanonicalName());
         SourceInfo.setSourceInfo(source, JavaPrimitive.class);
-        return new SPLStreamImpl(te, source.addOutput(schema));
+        return newSPLStream(te, source, schema, true);
     }
     
+    
+    private static String getKind(Class<?> opClass) {
+        
+        PrimitiveOperator primitive = opClass.getAnnotation(PrimitiveOperator.class);
+        
+        final String kindName = primitive.name().length() == 0 ?
+                opClass.getSimpleName() : primitive.name();
+        
+        String namespace;
+        if (primitive.namespace().length() != 0)
+            namespace = primitive.namespace();
+        else {
+            Package pkg = opClass.getPackage();
+            if (pkg != null) {
+                Namespace ns = pkg.getAnnotation(Namespace.class);
+                if (ns == null)
+                    namespace = pkg.getName();
+                else
+                    namespace = ns.value();
+            }
+            else {
+                namespace = "";
+            }
+        }
+        
+        return namespace + "::" + kindName;
+    }
     
     
     private static String getInvocationName(Class<? extends Operator> opClass) {
         PrimitiveOperator po = opClass.getAnnotation(PrimitiveOperator.class);
         if (po == null)
-            throw new IllegalStateException("Missing @PrimitiveOperator for: " + opClass.getName());
+            throw new IllegalStateException(Messages.getString("SPL_MISSING_ANNOTATION", opClass.getName()));
         String opName = po.name();
         if (opName.isEmpty()) {
             opName = opClass.getSimpleName();

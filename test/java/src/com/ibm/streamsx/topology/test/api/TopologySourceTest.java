@@ -95,13 +95,16 @@ public class TopologySourceTest extends TestTopology {
     
     @Test
     public void testPeriodicSource() throws Exception {
+        // Uses Condition.getResult()
+        assumeTrue(!isStreamingAnalyticsRun());
+        
         Topology topology = newTopology();
 
         TStream<Long> timestamps = topology.periodicSource(new PeriodicSourceTester(), 500, TimeUnit.MILLISECONDS);
         TStream<String> st = StringStreams.toString(timestamps);
         
         Condition<Long> c = topology.getTester().atLeastTupleCount(st, 20);
-        Condition<List<String>> tuples = topology.getTester().stringContents(st, "notused");
+        Condition<List<String>> tuples = topology.getTester().stringContents(st);
 
         long start = System.currentTimeMillis();
         complete(topology.getTester(), c, 30, TimeUnit.SECONDS);
@@ -116,7 +119,7 @@ public class TopologySourceTest extends TestTopology {
             if (lastTime != null) {
                 assertTrue(time >= lastTime);
                 long diff = time - lastTime;
-                assertTrue("Source get time difference:" + diff, diff > 450);
+                assertTrue("Source get time difference:" + diff, diff > 400);
             }
             
             lastTime = time;
@@ -133,17 +136,22 @@ public class TopologySourceTest extends TestTopology {
     
     @Test
     public void testPeriodicMultiSource() throws Exception {
+        // Uses Condition.getResult()
+        assumeTrue(!isStreamingAnalyticsRun());
+        
         Topology topology = newTopology();
 
         TStream<String> ms = topology.periodicMultiSource(new PeriodicMultiSourceTester(),
                 500, TimeUnit.MILLISECONDS);
         
         Condition<Long> ending = topology.getTester().atLeastTupleCount(ms, 60);
-        Condition<List<String>> tuples = topology.getTester().stringContents(ms, "notused");
+        Condition<List<String>> tuples = topology.getTester().stringContents(ms);
 
         long start = System.currentTimeMillis();
         complete(topology.getTester(), ending, 30, TimeUnit.SECONDS);
         
+        long totalDiff = 0;
+        int count = 0;
         String prevTuple = null;
         Long lastTime = null;
         for (String t : tuples.getResult()) {
@@ -159,25 +167,39 @@ public class TopologySourceTest extends TestTopology {
             prevTuple = t;
             
             long time = Long.parseLong(t.substring(1));
-            assertTrue(time >= start);
+            assertTrue("Expected time:" + time + ">= start:" + start,
+                       time >= start);
             
             if (lastTime != null) {
-                assertTrue(time >= lastTime);
+                assertTrue("Expected time:" + time + ">= lastTime:" + lastTime,
+                            time >= lastTime);
                 if (t.startsWith("A")) {
+                    // Can't really test for a specific diff as the periodic is
+                    // at a fixed rate and thread scheduling may mean that the
+                    // get was delayed and then called just before the next iteration.
+                    
                     long diff = time - lastTime;
-                    assertTrue(Long.toString(diff), diff > 450);
+                    assertTrue(Long.toString(diff), diff > 0);                    
+                    totalDiff += diff;
+                    count++;
                 }
             }
-            
             lastTime = time;
-            
         }
+        
+        // Try asserting the average period is somewhat close to 500ms.
+        double averageDiff = ((double) totalDiff) / ((double) count);
+        assertTrue("Average diff:" + averageDiff, averageDiff > 350.0);
     }
     
     public static class PeriodicMultiSourceTester implements Supplier<Iterable<String>> {
         private static final long serialVersionUID = 1L;
         @Override
         public Iterable<String> get() {
+            try {
+                Thread.sleep(2);
+            } catch (InterruptedException e) {
+            }
             long now = System.currentTimeMillis();
             return Arrays.asList("A"+now, "B"+now, "C"+now);
         }

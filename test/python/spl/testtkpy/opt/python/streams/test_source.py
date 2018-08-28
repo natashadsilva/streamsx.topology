@@ -1,6 +1,8 @@
+# coding=utf-8
 # Licensed Materials - Property of IBM
-# Copyright IBM Corp. 2016
+# Copyright IBM Corp. 2016,2017
 
+import decimal
 import itertools
 
 # Import the SPL decorators
@@ -11,13 +13,17 @@ from streamsx.spl.types import Timestamp
 # Test Source functions
 #------------------------------------------------------------------
 
-def splNamespace():
+def spl_namespace():
     return "com.ibm.streamsx.topology.pytest.pysource"
 
+# Should be ignored (bad namespace)
+def splNamespace():
+    return "453535351&%$="
+
 #
-# Returns a value matching the test schema TEST_ALL_PYTHON_TYPES
+# Returns a value matching the test schema ALL_PYTHON_TYPES_SCHEMA
 @spl.source()
-class SpecificValues:
+class SpecificValues(object):
     def __init__(self):
         pass
 
@@ -29,7 +35,11 @@ class SpecificValues:
            4367.34, -87657525334.22,
            "⡍⠔⠙⠖ ⡊ ⠙⠕⠝⠰⠞ ⠍⠑⠁⠝ ⠞⠕ ⠎⠁⠹ ⠹⠁⠞ ⡊ ⠅⠝⠪⠂ ⠕⠋ ⠍⠹",
            complex(-23.0, 325.38), complex(-35346.234, 952524.93),
+           decimal.Decimal("3.459876E72"), 
+           decimal.Decimal("4.515716038731674E-307"),
+           decimal.Decimal("1.085059319410602846995696978141388E+5922"),
            Timestamp(781959759, 9320, 76),
+           "binary blob 8322".encode('utf-8'),
            ["a", "Streams!", "2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm"],
            [345,-4578],
            [9983, -4647787587, 0],
@@ -45,7 +55,7 @@ class SpecificValues:
         return itertools.repeat(rv, 1)
 
 @spl.source()
-class SparseTuple:
+class SparseTuple(object):
     def __init__(self):
         pass
 
@@ -56,7 +66,7 @@ class SparseTuple:
         return itertools.repeat(rv, 1)
 
 @spl.source()
-class DictTuple:
+class DictTuple(object):
     def __init__(self):
         pass
 

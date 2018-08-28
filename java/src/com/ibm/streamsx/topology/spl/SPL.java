@@ -4,11 +4,14 @@
  */
 package com.ibm.streamsx.topology.spl;
 
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.KIND;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_JAVA;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_SPL;
 import static com.ibm.streamsx.topology.internal.core.InternalProperties.TOOLKITS;
+import static com.ibm.streamsx.topology.spl.OpAPIUtil.fixParameters;
+import static com.ibm.streamsx.topology.spl.SPLStreamImpl.newSPLStream;
 
 import java.io.File;
 import java.io.IOException;
@@ -19,8 +22,8 @@ import java.util.Map;
 
 import javax.xml.bind.JAXBException;
 
-import com.ibm.json.java.JSONArray;
-import com.ibm.json.java.JSONObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.ibm.streams.operator.StreamSchema;
 import com.ibm.streams.operator.Type.MetaType;
 import com.ibm.streamsx.topology.TSink;
@@ -28,14 +31,16 @@ import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.TopologyElement;
 import com.ibm.streamsx.topology.builder.BInputPort;
 import com.ibm.streamsx.topology.builder.BOperatorInvocation;
-import com.ibm.streamsx.topology.builder.BOutputPort;
+import com.ibm.streamsx.topology.builder.JParamTypes;
 import com.ibm.streamsx.topology.function.Supplier;
 import com.ibm.streamsx.topology.internal.context.remote.TkInfo;
 import com.ibm.streamsx.topology.internal.core.SourceInfo;
-import com.ibm.streamsx.topology.internal.core.SubmissionParameter;
+import com.ibm.streamsx.topology.internal.core.SubmissionParameterFactory;
 import com.ibm.streamsx.topology.internal.core.TSinkImpl;
+import com.ibm.streamsx.topology.internal.functional.SubmissionParameter;
 import com.ibm.streamsx.topology.internal.toolkit.info.IdentityType;
 import com.ibm.streamsx.topology.internal.toolkit.info.ToolkitInfoModelType;
+import com.ibm.streamsx.topology.internal.messages.Messages;
 
 /**
  * Integration between Java topologies and SPL operator invocations. If the SPL
@@ -47,7 +52,8 @@ import com.ibm.streamsx.topology.internal.toolkit.info.ToolkitInfoModelType;
  * the {@code FileSource} operator from the SPL Standard toolkit must be specified
  * as {@code spl.adapter::FileSource}.
  * <p>
- * When necessary use {@code createValue(T, MetaType)}
+ * When necessary use {@code createValue(T, MetaType)},
+ * or {@code createNullValue()},
  * to create parameter values for SPL types.
  * For example:
  * <pre>{@code
@@ -73,16 +79,24 @@ import com.ibm.streamsx.topology.internal.toolkit.info.ToolkitInfoModelType;
  * params.put("aUInt8", SPL.createSubmissionParameter(topology, "uint8Param", SPL.createValue((byte)13, MetaType.UINT8), true);
  * ... = SPLPrimitive.invokeOperator(..., params);
  * }</pre>
+ * <P>
+ * <B>Note:</B> Invoking an SPL composite operator with internal
+ * {@code config placement} clauses can cause logical topology constraints
+ * declared by {@link SPLStream#isolate() isolate}, {@link SPLStream#lowLatency() lowLatency}
+ * or {@link SPLStream#colocate(com.ibm.streamsx.topology.context.Placeable...) colocate}
+ * to be violated. This is due to the config placement clause within the composite definition
+ * overriding the invocation clauses generated for the logical constraints.
+ * </P>
  */
 public class SPL {
     
     /**
-     * Create a SPL value wrapper object for the 
+     * Create an SPL value wrapper object for the 
      * specified SPL {@code MetaType}.
      * <p>
-     * Use of this is required to construct a SPL operator parameter value
+     * Use of this is required to construct an SPL operator parameter value
      * whose SPL type is not implied from simple Java type.  e.g.,
-     * a {@code String} value is interpreted as a SPL {@code rstring},
+     * a {@code String} value is interpreted as an SPL {@code rstring},
      * and {@code Byte,Short,Integer,Long} are interpreted as SPL signed integers.
      * @param value the value to wrap
      * @param metaType the SPL meta type
@@ -91,22 +105,37 @@ public class SPL {
      *     not appropriate for {@code metaType}
      */
     public static <T> Object createValue(T value, MetaType metaType) {
-        return new SPLValue<T>(value, metaType).toJSON();
+        return new SPLValue<T>(value, metaType).asJSON();
+    }
+    
+    /**
+     * Create an SPL value wrapper object for an SPL null value.
+     * <p>
+     * Use of this is required to construct an SPL operator parameter
+     * null value for an optional type.
+     * @return the wrapper object
+     * @since 1.10
+     */
+    public static Object createNullValue() {
+        JsonObject jo = new JsonObject();
+        jo.addProperty("type", JParamTypes.TYPE_SPL_EXPRESSION);
+        jo.addProperty("value", "null");
+        return jo;
     }
     
     private static SPLValue<?> createSPLValue(Object paramValue) {
-        if (paramValue instanceof JSONObject) {
-            SPLValue<?> splValue = SPLValue.fromJSON((JSONObject) paramValue);
+        if (paramValue instanceof JsonObject) {
+            SPLValue<?> splValue = SPLValue.fromJSON((JsonObject) paramValue);
             return splValue;
         }            
-        throw new IllegalArgumentException("param is not from createValue()");
+        throw new IllegalArgumentException(Messages.getString("SPL_PARAMETER_INVALID"));
     }
 
     /**
      * Create a submission parameter with or without a default value.
      * <p>
      * Use of this is required to construct a submission parameter for
-     * a SPL operator parameter whose SPL type requires the use of
+     * an SPL operator parameter whose SPL type requires the use of
      * {@code createValue(Object, MetaType)}.
      * <p>
      * See {@link Topology#createSubmissionParameter(String, Class)} for
@@ -125,8 +154,9 @@ public class SPL {
     public static <T> Supplier<T> createSubmissionParameter(Topology top,
             String name, Object paramValue, boolean withDefault) {
         SPLValue<?> splValue = createSPLValue(paramValue);
-        SubmissionParameter<T> sp = new SubmissionParameter<T>(top, name, splValue.toJSON(), withDefault);
-        top.builder().createSubmissionParameter(name, sp.toJSON());
+        @SuppressWarnings("unchecked")
+        SubmissionParameter<T> sp = (SubmissionParameter<T>) SubmissionParameterFactory.create(name, splValue.asJSON(), withDefault);
+        top.builder().createSubmissionParameter(name, SubmissionParameterFactory.asJSON(sp));
         return sp;
     }
     
@@ -172,11 +202,10 @@ public class SPL {
             SPLInput input,
             StreamSchema outputSchema, Map<String, ? extends Object> params) {
 
-        BOperatorInvocation op = input.builder().addSPLOperator(name, kind, params);
+        BOperatorInvocation op = input.builder().addSPLOperator(name, kind, fixParameters(params));
         SourceInfo.setSourceInfo(op, SPL.class);
         SPL.connectInputToOperator(input, op);
-        BOutputPort stream = op.addOutput(outputSchema);
-        return new SPLStreamImpl(input, stream);
+        return newSPLStream(input, op, outputSchema, true);
     }
     
     /**
@@ -213,7 +242,7 @@ public class SPL {
             List<StreamSchema> outputSchemas,
             Map<String, ? extends Object> params) {
         
-        BOperatorInvocation op = te.builder().addSPLOperator(name, kind, params);
+        BOperatorInvocation op = te.builder().addSPLOperator(name, kind, fixParameters(params));
         
         SourceInfo.setSourceInfo(op, SPL.class);
         
@@ -227,7 +256,7 @@ public class SPL {
         
         List<SPLStream> streams = new ArrayList<>(outputSchemas.size());
         for (StreamSchema outputSchema : outputSchemas)
-            streams.add(new SPLStreamImpl(te, op.addOutput(outputSchema)));
+            streams.add(newSPLStream(te, op, outputSchema, outputSchemas.size() == 1));
             
         return streams;
     }
@@ -282,7 +311,7 @@ public class SPL {
             Map<String, ? extends Object> params) {
 
         BOperatorInvocation op = input.builder().addSPLOperator(name, kind,
-                params);
+                fixParameters(params));
         SourceInfo.setSourceInfo(op, SPL.class);
         SPL.connectInputToOperator(input, op);
         return new TSinkImpl(input.topology(), op);
@@ -314,11 +343,10 @@ public class SPL {
             Map<String, Object> params, StreamSchema schema) {
 
         BOperatorInvocation splSource = te.builder().addSPLOperator(
-                opNameFromKind(kind), kind, params);
+                opNameFromKind(kind), kind, fixParameters(params));
         SourceInfo.setSourceInfo(splSource, SPL.class);
-        BOutputPort stream = splSource.addOutput(schema);
        
-        return new SPLStreamImpl(te, stream);
+        return newSPLStream(te, splSource, schema, true);
     }
 
     /**
@@ -329,9 +357,9 @@ public class SPL {
      */
     public static void addToolkit(TopologyElement te, File toolkitRoot) throws IOException {
             
-        JSONObject tkinfo = newToolkitDepInfo(te);
+        JsonObject tkinfo = newToolkitDepInfo(te);
         
-        tkinfo.put("root", toolkitRoot.getCanonicalPath());
+        tkinfo.addProperty("root", toolkitRoot.getCanonicalPath());
         
         ToolkitInfoModelType infoModel;
         try {
@@ -342,18 +370,18 @@ public class SPL {
         if (infoModel != null) {
             IdentityType tkIdentity = infoModel.getIdentity();
 
-            tkinfo.put("name", tkIdentity.getName());
-            tkinfo.put("version", tkIdentity.getVersion());
+            tkinfo.addProperty("name", tkIdentity.getName());
+            tkinfo.addProperty("version", tkIdentity.getVersion());
         }
     }
     
-    private static JSONObject newToolkitDepInfo(TopologyElement te) {
-        JSONArray tks = (JSONArray) te.topology().getConfig().get(TOOLKITS);
+    private static JsonObject newToolkitDepInfo(TopologyElement te) {
+        JsonArray tks = (JsonArray) te.topology().getConfig().get(TOOLKITS);
         
         if (tks == null) {
-            te.topology().getConfig().put(TOOLKITS, tks = new JSONArray());
+            te.topology().getConfig().put(TOOLKITS, tks = new JsonArray());
         }
-        JSONObject tkinfo = new JSONObject();
+        JsonObject tkinfo = new JsonObject();
         tks.add(tkinfo);
         return tkinfo;
     }
@@ -365,9 +393,9 @@ public class SPL {
      * @param version Version dependency string.
      */
     public static void addToolkitDependency(TopologyElement te, String name, String version) {
-        JSONObject tkinfo = newToolkitDepInfo(te);
-        tkinfo.put("name", name);
-        tkinfo.put("version", version);
+        JsonObject tkinfo = newToolkitDepInfo(te);
+        tkinfo.addProperty("name", name);
+        tkinfo.addProperty("version", version);
     }
 
     /**
@@ -381,9 +409,9 @@ public class SPL {
      * @param className the Java primitive operator's class name.
      */
     public static void tagOpAsJavaPrimitive(BOperatorInvocation op, String kind, String className) {
-        op.json().put(MODEL, MODEL_SPL);
-        op.json().put(LANGUAGE, LANGUAGE_JAVA);
-        op.json().put("kind", kind);
-        op.json().put("kind.javaclass", className);
+        op._json().addProperty(MODEL, MODEL_SPL);
+        op._json().addProperty(LANGUAGE, LANGUAGE_JAVA);
+        op._json().addProperty(KIND, kind);
+        op._json().addProperty("kind.javaclass", className);
     }
 }

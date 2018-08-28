@@ -17,8 +17,6 @@
 #ifndef __SPL__SPLPY_PYOP_H
 #define __SPL__SPLPY_PYOP_H
 
-#include "splpy_general.h"
-#include "splpy_setup.h"
 #include "splpy_op.h"
 
 namespace streamsx {
@@ -27,11 +25,21 @@ namespace streamsx {
 class SplpyPyOp : public SplpyOp {
   public:
       SplpyPyOp(SPL::Operator * op) :
-         SplpyOp(op, "/opt/.__splpy/common") {
+          SplpyOp(op, "/opt/.__splpy/common"), isStateful_(false) {
       }
+
+      void setStateful(bool stateful) {
+        isStateful_ = stateful;
+      }
+
+      virtual bool isStateful() {
+        return isStateful_;
+      }
+
+ private:
+      bool isStateful_;
 };
 
 }}
 
 #endif
-

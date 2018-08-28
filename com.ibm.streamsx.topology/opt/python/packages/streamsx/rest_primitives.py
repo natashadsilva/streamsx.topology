@@ -1,18 +1,39 @@
+# coding=utf-8
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2016,2017
+
+"""
+Primitive objects for REST bindings.
+
+********
+Overview
+********
+
+Contains classes representing primitive Streams objects, such as
+:py:class:`Instance`, :py:class:`Job`, :py:class:`PE`, etc.
+
+"""
+from future.builtins import *
+
 import logging
 import requests
 import queue
+import os
 import threading
 import time
 import json
 import re
+import time
+
 from pprint import pformat
+from urllib import parse
 
 import streamsx.topology.schema
 
 logger = logging.getLogger('streamsx.rest')
 
+def _file_name(prefix, id_, suffix):
+    return prefix + '_' + id_ + '_' + str(int(time.time())) + suffix
 
 def _exact_resource(json_rep, id=None):
     if id is not None:
@@ -91,16 +112,9 @@ class _ResourceElement(object):
         if id is not None and name is not None:
             raise ValueError("id and name cannot specified together")
 
-        elements = []
         json_elements = self.rest_client.make_request(url)[key]
-        for json_element in json_elements:
-            if not _exact_resource(json_element, id):
-                continue
-            if not _matching_resource(json_element, name):
-                continue
-            elements.append(eclass(json_element, self.rest_client))
-
-        return elements
+        return [eclass(element, self.rest_client) for element in json_elements
+                if _exact_resource(element, id) and _matching_resource(element, name)]
 
     def _get_element_by_id(self, url, key, eclass, id):
         """Get a single element matching an `id`
@@ -124,9 +138,8 @@ class _ResourceElement(object):
             return elements[0]
         raise ValueError("Multiple resources matching: {0}".format(id))
 
-
 class _StreamsRestClient(object):
-    """Handles the session connection with the Streams REST API
+    """Session connection with the Streams REST API
     """
     def __init__(self, username, password):
         """
@@ -141,10 +154,144 @@ class _StreamsRestClient(object):
 
         self.session = requests.Session()
         self.session.auth = (username, password)
+        self._auth_token = requests.auth._basic_auth_str(self._username, self._password)
+
+    def _get_authorization(self):
+        return self._auth_token
+
+    def handle_http_errors(self, res):
+        # HTTP error responses are 4xx, server errors are 5xx
+        if res.status_code >= 400:
+            logger.error("Response returned with error code: " + str(res.status_code))
+            logger.error(res.text)
+            res.raise_for_status()
 
     def make_request(self, url):
         logger.debug('Beginning a REST request to: ' + url)
-        return self.session.get(url).json()
+        res = self.session.get(url)
+        self.handle_http_errors(res)
+        return res.json()
+
+    def make_raw_streaming_request(self, url, mimetype=None):
+        logger.debug('Beginning a REST request to: ' + url)
+        headers = {}
+        if mimetype:
+            headers['Accept'] = mimetype
+        res = self.session.get(url, stream=True, headers=headers)
+        self.handle_http_errors(res)
+
+        return res
+
+    def _retrieve_file(self, url, filename, dir_, mimetype):        
+        logs = self.make_raw_streaming_request(url, mimetype)
+        
+        if dir_ is None:
+            dir_ = os.getcwd()
+
+        path = os.path.join(dir_, filename)
+        try:
+            with open(path, 'w+b') as logfile:
+                for chunk in logs.iter_content(chunk_size=1024*64):
+                    if chunk:
+                        logfile.write(chunk)
+        except IOError as e:
+            logger.error("IOError({0}) writing application log files: {1}".format(e.errno, e.strerror))
+            raise e
+        except Exception as e:
+            logger.error("Error while writing application log files")
+            raise e
+
+        return path
+
+    def __str__(self):
+        return pformat(self.__dict__)
+
+
+
+class _IAMStreamsRestClient(_StreamsRestClient):
+    """Handles the session connection with the Streams REST API and Streaming Analytics service
+    using IAM authentication.
+    """
+
+    # Thread local of used clients identified by service id.
+    _CLIENTS = threading.local()
+
+    # Re-use client across the same thread (Session is not thread safe).
+    @staticmethod
+    def _create(credentials):
+        clients = _IAMStreamsRestClient._CLIENTS
+        if not hasattr(clients, '_clients'):
+            clients._clients = {}
+        service_id = credentials[_IAMConstants.SERVICE_ID]
+        if service_id in clients._clients:
+            return clients._clients[service_id]
+
+        client = _IAMStreamsRestClient(credentials)
+        clients._clients[service_id] = client
+        return client
+        
+    def __init__(self, credentials):
+        """
+        Args:
+            credentials: The credentials of the Streaming Analytics service.
+        """
+        self._credentials = credentials
+        self._api_key = self._credentials[_IAMConstants.API_KEY]
+
+        # Represents the epoch time in milliseconds at which
+        # the token is no longer valid
+        # Starts at -1 such that the first invocation of a REST request
+        # Retrieves a token
+        self._auth_expiry_time = -1
+
+        # Determine if service is in stage1
+        if 'stage1' in  self._credentials[_IAMConstants.V2_REST_URL]:
+            self._token_url = _IAMConstants.TOKEN_URL_STAGE1
+        else:
+            self._token_url = _IAMConstants.TOKEN_URL
+
+        self.session = requests.Session()
+
+    def _get_authorization(self):
+        # Convert cur time to milliseconds
+        cur_time = int(time.time() * 1000)
+        if cur_time >= self._auth_expiry_time:
+            self._refresh_authorization()
+        return self._bearer_token
+
+    def _refresh_authorization(self):
+        post_url = self._token_url + '?' + self._get_token_params(self._api_key)
+        res = requests.post(post_url, headers = {'Accept' : 'application/json',
+                                                 'Content-Type' : 'application/x-www-form-urlencoded'})
+        self.handle_http_errors(res)
+        res = res.json()
+
+        self._auth_expiry_time = int(res[_IAMConstants.EXPIRATION] * 1000) - _IAMConstants.EXPIRY_PAD_MS
+        self._bearer_token = self._create_bearer_auth(res[_IAMConstants.ACCESS_TOKEN])
+
+    def _create_bearer_auth(self, token):
+        return _IAMConstants.AUTH_BEARER_PREFIX + token
+
+    def _get_token_params(self, api_key):
+        return parse.urlencode({_IAMConstants.GRANT_PARAM : _IAMConstants.GRANT_TYPE,
+                                       _IAMConstants.API_KEY : api_key})
+
+    def make_request(self, url):
+        logger.debug('Beginning a REST request to: ' + url)
+        headers={'Authorization' : self._get_authorization(),
+                 'Accept': 'application/json'}
+        res = self.session.get(url, headers=headers)
+        self.handle_http_errors(res)
+        return res.json()
+
+    def make_raw_streaming_request(self, url, mimetype=None):
+        logger.debug('Beginning a REST request to: ' + url)
+        headers = {'Authorization' : self._get_authorization()}
+        if mimetype:
+            headers['Accept'] = mimetype
+        res = self.session.get(url, stream=True, headers=headers)
+        self.handle_http_errors(res)
+        return res
 
     def __str__(self):
         return pformat(self.__dict__)
@@ -165,10 +312,9 @@ class _ViewDataFetcher(object):
 
     def __call__(self):
         while not self._stopped():
-            _items = self._get_deduplicated_view_items()
-            if _items is not None:
-                for itm in _items:
-                    self.items.put(itm)
+            _items = self._get_deduplicated_view_items() or []
+            for itm in _items:
+                self.items.put(itm)
             time.sleep(1)
 
     def _get_deduplicated_view_items(self):
@@ -237,8 +383,7 @@ def _get_view_dict_tuple(item):
 
 
 class View(_ResourceElement):
-    """The View resource element provides access to information about a view that is associated with an active job, and
-    exposes methods to retrieve data from the view's stream.
+    """View on a stream.
 
     Attributes:
         id (str): An unique identifier for the view.
@@ -325,15 +470,14 @@ class View(_ResourceElement):
         Returns:
             list(ViewItem): List of ViewItem(s) associated with this view.
         """
-        view_items = []
-        for json_view_items in self.rest_client.make_request(self.viewItems)['viewItems']:
-            view_items.append(ViewItem(json_view_items, self.rest_client))
+        view_items = [ViewItem(json_view_items, self.rest_client) for json_view_items
+                      in self.rest_client.make_request(self.viewItems)['viewItems']]
         logger.debug("Retrieved " + str(len(view_items)) + " items from view " + self.name)
         return view_items
 
 
 class ViewItem(_ResourceElement):
-    """Represents the data of a tuple, its type, and the time when it was collected from the stream.
+    """A stream tuple in view.
 
     Attributes:
         collectionTime (long): Epoch time when this viewItem is collected from the stream.
@@ -353,8 +497,7 @@ class ViewItem(_ResourceElement):
 
 
 class Host(_ResourceElement):
-    """The host element resource provides access to information about a host that is allocated to a domain as a
-    resource for running Streams services and applications.
+    """Resource in a Streams domain or instance.
 
     Attributes:
         name (str): Configuration name for the IBM Streams resource.
@@ -380,7 +523,7 @@ class Host(_ResourceElement):
 
 
 class Job(_ResourceElement):
-    """The job element resource provides access to information about a submitted job within a specified instance.
+    """A running streams application.
 
     Attributes:
         id (str): job ID.
@@ -403,6 +546,31 @@ class Job(_ResourceElement):
         >>> print (jobs[0].health)
         healthy
     """
+    def retrieve_log_trace(self, filename=None, dir=None):
+        """Retrieves the application log and trace files of the job
+        and saves them as a compressed tar file.
+
+        An existing file with the same name will be overwritten.
+
+        Args:
+            filename (str): name of the created tar file. Defaults to `job_<id>_<timestamp>.tar.gz` where `id` is the job identifier and `timestamp` is the number of seconds since the Unix epoch, for example ``job_355_1511995995.tar.gz``.
+            dir (str): a valid directory in which to save the archive. Defaults to the current directory.
+
+        Returns:
+            str: the path to the created tar file, or None if retrieving a job's logs is not supported in the version of streams to which the job is submitted.
+
+        .. versionadded:: 1.8
+        """
+
+        if hasattr(self, "applicationLogTrace") and self.applicationLogTrace is not None:
+            logger.debug("Retrieving application logs from: " + self.applicationLogTrace)
+            if not filename:
+                filename = _file_name('job', self.id, '.tar.gz')
+
+            return self.rest_client._retrieve_file(self.applicationLogTrace, filename, dir, 'application/x-compressed')
+        else:
+            return None
+
     def get_views(self, name=None):
         """Get the list of :py:class:`View` elements associated with this job.
 
@@ -412,6 +580,14 @@ class Job(_ResourceElement):
 
         Returns:
             list(View): List of views matching `name`.
+
+        Retrieving a list of views that contain the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instances = sc.get_instances()
+            >>> job = instances[0].get_jobs()[0]
+            >>> views = job.get_views(name = "*temperatureSensor*")
         """
         return self._get_elements(self.views, 'views', View, name=name)
 
@@ -447,19 +623,34 @@ class Job(_ResourceElement):
         """
         return self._get_elements(self.operatorConnections, 'connections', OperatorConnection)
 
-    def get_operators(self):
+    def get_operators(self, name=None):
         """Get the list of :py:class:`Operator` elements associated with this job.
+
+        Args:
+            name(str): Only return operators matching `name`, where `name` can be a regular expression.  If
+                `name` is not supplied, then all operators for this job are returned.
 
         Returns:
             list(Operator): List of Operator elements associated with this job.
+
+        Retrieving a list of operators whose name contains the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instances = sc.get_instances()
+            >>> job = instances[0].get_jobs()[0]
+            >>> operators = job.get_operators(name="*temperatureSensor*")
+
+        .. versionsince:: 1.9 `name` parameter
         """
-        return self._get_elements(self.operators, 'operators', Operator)
+        return self._get_elements(self.operators, 'operators', Operator, name=name)
 
     def get_pes(self):
         """Get the list of :py:class:`PE` elements associated with this job.
 
         Returns:
             list(PE): List of PE elements associated with this job.
+
         """
         return self._get_elements(self.pes, 'pes', PE)
 
@@ -503,7 +694,7 @@ class Job(_ResourceElement):
 
 
 class Operator(_ResourceElement):
-    """The operator element resource provides access to information about a specific operator in a job.
+    """An operator invocation within a job.
 
     Attributes:
         name(str): Operator name.
@@ -520,7 +711,7 @@ class Operator(_ResourceElement):
         operator
     """
     def get_metrics(self, name=None):
-        """Get metrics for an operator.
+        """Get metrics for this operator.
 
         Args:
             name(str, optional): Only return metrics matching `name`, where `name` can be a regular expression.  If
@@ -528,13 +719,62 @@ class Operator(_ResourceElement):
 
         Returns:
              list(Metric): List of matching metrics.
+
+        Retrieving a list of metrics whose name contains the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instances = sc.get_instances()
+            >>> operator = instances[0].get_operators()[0]
+            >>> metrics = op.get_metrics(name='*temperatureSensor*')
         """
         return self._get_elements(self.metrics, 'metrics', Metric, name=name)
 
+    def get_host(self):
+        """Get resource this operator is currently executing in.
+           If the operator is running on an externally
+           managed resource ``None`` is returned.
+
+        Returns:
+            Host: Resource this operator is running on.
+
+        .. versionadded:: 1.9
+        """
+        return Host(self.rest_client.make_request(self.host), self.rest_client) if self.host else None
+
+    def get_pe(self):
+        """Get the Streams processing element this operator is executing in.
+
+        Returns:
+            PE: Processing element for this operator.
+
+        .. versionadded:: 1.9
+        """
+        return PE(self.rest_client.make_request(self.pe), self.rest_client)
+
+    def get_output_ports(self):
+        """Get list of output ports for this operator.
+
+        Returns:
+            list(OperatorOutputPort): Output ports for this operator.
+
+        .. versionadded:: 1.9
+        """
+        return self._get_elements(self.outputPorts, 'outputPorts', OperatorOutputPort)
+
+    def get_input_ports(self):
+        """Get list of input ports for this operator.
+
+        Returns:
+            list(OperatorInputPort): Input ports for this operator.
+
+        .. versionadded:: 1.9
+        """
+        return self._get_elements(self.inputPorts, 'inputPorts', OperatorInputPort)
+
 
 class OperatorConnection(_ResourceElement):
-    """The operator connection element resource provides access to information about a connection between two operator
-    ports.
+    """Connection between operators.
 
     Attributes:
         id(str): Unique ID of this operator connection within the instance.
@@ -553,8 +793,7 @@ class OperatorConnection(_ResourceElement):
 
 
 class OperatorOutputPort(_ResourceElement):
-    """Operator output port resource provides access to information about an output port
-    for a specific operator.
+    """Operator output port.
 
     Attributes:
         name(str): Name of this output port.
@@ -571,11 +810,63 @@ class OperatorOutputPort(_ResourceElement):
         >>> print (operatoroutputport.resourceType)
         operatorOutputPort
     """
-    pass
+    def get_metrics(self, name=None):
+        """Get metrics for this output port.
+
+        Args:
+            name(str, optional): Only return metrics matching `name`, where `name` can be a regular expression.  If
+                `name` is not supplied, then all metrics for this output port are returned.
+
+        Returns:
+             list(Metric): List of matching metrics.
+
+        Retrieving a list of metrics whose name contains the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instances = sc.get_instances()
+            >>> exportedstreams = instances[0].get_exported_streams()
+            >>> operatoroutputport = exportedstreams[0].get_operator_output_port()
+            >>> operatoroutputport.get_metrics(name='*temperatureSensor*')
+
+        .. versionadded:: 1.9
+        """
+        return self._get_elements(self.metrics, 'metrics', Metric, name=name)
+
+class OperatorInputPort(_ResourceElement):
+    """Operator input port.
+
+    Attributes:
+        name(str): Name of this input port.
+        resourceType(str): Identifies the REST resource type, which is *operatorInputPort*.
+        indexWithinOperator(int): Index of the input port within the operator.
+
+    .. versionadded:: 1.9
+    """
+    def get_metrics(self, name=None):
+        """Get metrics for this input port.
+
+        Args:
+            name(str, optional): Only return metrics matching `name`, where `name` can be a regular expression.  If
+                `name` is not supplied, then all metrics for this input port are returned.
+
+        Returns:
+             list(Metric): List of matching metrics.
+        
+        Retrieving a list of metrics whose name contains the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instances = sc.get_instances()
+            >>> operator = instances[0].get_operators()[0]
+            >>> input_port = operator.get_input_ports()[0]
+            >>> metrics = input_port.get_metrics(name='*temperatureSensor*')
+        """
+        return self._get_elements(self.metrics, 'metrics', Metric, name=name)
 
 
 class Metric(_ResourceElement):
-    """Metric resource provides access to information about a Streams metric.
+    """Streams custom or system metric.
 
     Attributes:
         name(str): Name of this metric.
@@ -599,7 +890,8 @@ class Metric(_ResourceElement):
 
 
 class PE(_ResourceElement):
-    """The processing element (PE) resource provides access to information about a PE.
+    """Processing element (PE) within a job.
+    A processing element hosts one or more operators within a single job.
 
     Attributes:
         id(str): PE ID.
@@ -631,12 +923,102 @@ class PE(_ResourceElement):
         >>> print(pes[0].resourceType)
         pe
     """
-    pass
+
+    def get_host(self):
+        """Get resource this processing element is currently executing in.
+           If the processing element is running on an externally
+           managed resource ``None`` is returned.
+
+        Returns:
+            Host: Resource this processing element is running on.
+
+        .. versionadded:: 1.9
+        """
+        return Host(self.rest_client.make_request(self.host), self.rest_client) if self.host else None
+
+    def retrieve_trace(self, filename=None, dir=None):
+        """Retrieves the application trace files for this PE
+        and saves them as a plain text file.
+
+        An existing file with the same name will be overwritten.
+
+        Args:
+            filename (str): name of the created file. Defaults to `pe_<id>_<timestamp>.trace` where `id` is the PE identifier and `timestamp` is the number of seconds since the Unix epoch, for example ``pe_83_1511995995.trace``.
+            dir (str): a valid directory in which to save the file. Defaults to the current directory.
+
+        Returns:
+            str: the path to the created file, or None if retrieving a job's logs is not supported in the version of streams to which the job is submitted.
+
+        .. versionadded:: 1.9
+        """
+        if hasattr(self, "applicationTrace") and self.applicationTrace is not None:
+            logger.debug("Retrieving PE trace: " + self.applicationTrace)
+            if not filename:
+                filename = _file_name('pe', self.id, '.trace')
+            return self.rest_client._retrieve_file(self.applicationTrace, filename, dir, 'text/plain')
+
+        else:
+            return None
+
+    def retrieve_console_log(self, filename=None, dir=None):
+        """Retrieves the application console log (standard out and error)
+        files for this PE and saves them as a plain text file.
+
+        An existing file with the same name will be overwritten.
+
+        Args:
+            filename (str): name of the created file. Defaults to `pe_<id>_<timestamp>.stdouterr` where `id` is the PE identifier and `timestamp` is the number of seconds since the Unix epoch, for example ``pe_83_1511995995.trace``.
+            dir (str): a valid directory in which to save the file. Defaults to the current directory.
+
+        Returns:
+            str: the path to the created file, or None if retrieving a job's logs is not supported in the version of streams to which the job is submitted.
+
+        .. versionadded:: 1.9
+        """        
+        if hasattr(self, "consoleLog") and self.consoleLog is not None:
+            logger.debug("Retrieving PE console log: " + self.consoleLog)
+            if not filename:
+                filename = _file_name('pe', self.id, '.stdouterr')
+            return self.rest_client._retrieve_file(self.consoleLog, filename, dir, 'text/plain')
+
+        else:
+            return None
+
+    def get_metrics(self, name=None):
+        """Get metrics for this PE.
+
+        Args:
+            name(str, optional): Only return metrics matching `name`, where `name` can be a regular expression.  If
+                `name` is not supplied, then all metrics for this PE are returned.
+
+        Returns:
+             list(Metric): List of matching metrics.
+        
+        Retrieving a list of metrics whose name contains the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instances = sc.get_instances()
+            >>> pe = instances.get_pes()[0]
+            >>> metrics = pe.get_metrics(name='*temperatureSensor*')
+
+        .. versionadded:: 1.9
+        """
+        return self._get_elements(self.metrics, 'metrics', Metric, name=name)
+
+    def get_resource_allocation(self):
+        """Get the :py:class:`ResourceAllocation` element tance.
+
+        Returns:
+            ResourceAllocation: Resource allocation used to access information about the resource where this PE is running.
+
+        .. versionadded:: 1.9
+        """
+        return ResourceAllocation(self.rest_client.make_request(self.resourceAllocation), self.rest_client)
 
 
 class PEConnection(_ResourceElement):
-    """The processing element (PE) connection resource provides access to information about a connection between two
-    processing element (PE) ports.
+    """Stream connection between two PEs.
 
     Attributes:
         id(str): PE connection ID.
@@ -657,8 +1039,7 @@ class PEConnection(_ResourceElement):
 
 
 class ResourceAllocation(_ResourceElement):
-    """The ResourceAllocation element resource provides access to information about a resource that is allocated to
-    an IBM Streams instance.
+    """A resource that is allocated to an IBM Streams instance.
 
     Attributes:
         resourceType(str): Identifies the REST resource type, which is *resourceAllocation*.
@@ -675,11 +1056,52 @@ class ResourceAllocation(_ResourceElement):
         >>> print(allocations[0].resourceType)
         resourceAllocation
     """
-    pass
+    def get_resource(self):
+        """Get the :py:class:`Resource` of the resource allocation.
+
+        Returns:
+            Resource: Resource for this allocation.
+
+        .. versionadded:: 1.9
+        """
+        return Resource(self.rest_client.make_request(self.resource), self.rest_client)
+
+    def get_pes(self):
+        """Get the list of :py:class:`PE` running on this resource
+        in its instance.
+
+        Returns:
+            list(PE): List of PE running on this resource.
+
+        .. note:: If ``applicationResource`` is `False` an empty list is returned.
+        .. versionadded:: 1.9
+        """
+        if self.applicationResource:
+            return self._get_elements(self.pes, 'pes', PE)
+        else:
+            return []
+
+    def get_jobs(self, name=None):
+        """Retrieves jobs running on this resource in its instance.
+
+        Args:
+            name (str, optional): Only return jobs containing property **name** that matches `name`. `name` can be a
+                regular expression. If `name` is not supplied, then all jobs are returned.
+
+        Returns:
+            list(Job): A list of jobs matching the given `name`.
+        
+        .. note:: If ``applicationResource`` is `False` an empty list is returned.
+        .. versionadded:: 1.9
+        """
+        if self.applicationResource:
+            return self._get_elements(self.jobs, 'jobs', Job, None, name)
+        else:
+            return []
 
 
 class ActiveService(_ResourceElement):
-    """The ActiveService element resource provides access to information about a domain or an instance service.
+    """Domain or an instance service.
 
     Attributes:
         resourceType(str): Identifies the REST resource type, which is *activeService*.
@@ -702,7 +1124,7 @@ class ActiveService(_ResourceElement):
 
 
 class Installation(_ResourceElement):
-    """The Installation element resource provides access to information about IBM Streams installations.
+    """IBM Streams installation.
 
     Attributes:
         resourceType(str): Identifies the REST resource type, which is *installation*.
@@ -719,7 +1141,7 @@ class Installation(_ResourceElement):
 
 
 class ImportedStream(_ResourceElement):
-    """Imported stream resource represents a stream that has been imported by a job.
+    """Stream imported by a job.
 
     Attributes:
         resourceType(str): Identifies the REST resource type, which is *importedStream*.
@@ -736,7 +1158,7 @@ class ImportedStream(_ResourceElement):
 
 
 class ExportedStream(_ResourceElement):
-    """Exported stream resource represents a stream that has been exported by a job.
+    """Stream exported stream by a job.
 
     Attributes:
         resourceType(str): Identifies the REST resource type, which is *exportedStream*.
@@ -794,7 +1216,7 @@ class ExportedStream(_ResourceElement):
 
 
 class Instance(_ResourceElement):
-    """The instance element resource provides access to information about a Streams instance.
+    """IBM Streams instance.
 
     Attributes:
         id(str): Unique ID for this instance.
@@ -815,13 +1237,26 @@ class Instance(_ResourceElement):
         >>> print (instances[0].resourceType)
         instance
     """
-    def get_operators(self):
+    def get_operators(self, name=None):
         """Get the list of :py:class:`Operator` elements associated with this instance.
+
+        Args:
+            name(str): Only return operators matching `name`, where `name` can be a regular expression.  If
+                `name` is not supplied, then all operators for this instance are returned.
 
         Returns:
             list(Operator): List of Operator elements associated with this instance.
+
+        Retrieving a list of operators whose name contains the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instance = sc.get_instances()[0]
+            >>> operators = instance.get_operators(name="*temperatureSensor*")
+
+        .. versionsince:: 1.9 `name` parameter
         """
-        return self._get_elements(self.operators, 'operators', Operator)
+        return self._get_elements(self.operators, 'operators', Operator, name=name)
 
     def get_operator_connections(self):
         """Get the list of :py:class:`OperatorConnection` elements associated with this instance.
@@ -856,6 +1291,13 @@ class Instance(_ResourceElement):
 
         Returns:
             list(View): List of views matching `name`.
+
+        Retrieving a list of views whose name contains the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instance = sc.get_instances()[0]
+            >>> view = instance.get_views(name="*temperatureSensor*")
         """
         return self._get_elements(self.views, 'views', View, name=name)
 
@@ -884,6 +1326,13 @@ class Instance(_ResourceElement):
 
         Returns:
             list(Job): A list of jobs matching the given `name`.
+        
+        Retrieving a list of jobs whose name contains the string "temperatureSensor" could be performed as followed
+        Example:
+            >>> from streamsx import rest
+            >>> sc = rest.StreamingAnalyticsConnection()
+            >>> instance = sc.get_instances()[0]
+            >>> jobs = instance.get_jobs(name="*temperatureApplication*")
         """
         return self._get_elements(self.jobs, 'jobs', Job, None, name)
 
@@ -974,7 +1423,7 @@ class Instance(_ResourceElement):
 
 
 class ResourceTag(object):
-    """Contains information for a tag that is defined in a Streams domain
+    """Resource tag defined in a Streams domain
 
     Attributes:
         definition_format_properties(bool): Indicates whether the resource definition consists of one or more
@@ -1045,7 +1494,8 @@ class PublishedTopic(object):
 
 
 class Domain(_ResourceElement):
-    """The domain element resource provides access to information about a Streams domain.
+    """IBM Streams domain. A domain contains instances that support
+    running Streams applications as jobs.
 
     Attributes:
         id(str): Unique ID for this domain.
@@ -1102,14 +1552,44 @@ class Domain(_ResourceElement):
         """
         return self._get_elements(self.resources, 'resources', Resource)
 
-
 class Resource(_ResourceElement):
-    """The Streams resource element provides access to information about a Streams resource.
+    """A resource available to a IBM Streams domain.
+
+    Attributes:
+        id(str): Resource identifier.
+        displayName(str): Resource display name.
+        ipAddress(str): IP address.
+        status(str): Resource status.
+        tags(list[str]): Tags assigned to resource.
+
+    .. versionadded:: 1.9
+    """
+    def get_metrics(self, name=None):
+        """Get metrics for this resource.
+
+        Args:
+            name(str, optional): Only return metrics matching `name`, where `name` can be a regular expression.  If
+                `name` is not supplied, then all metrics for this resource are returned.
+
+        Returns:
+             list(Metric): List of matching metrics.
+        """
+        return self._get_elements(self.metrics, 'metrics', Metric, name=name)
+
+class RestResource(_ResourceElement):
+    """HTTP REST resource identifier.
 
     Attributes:
         name(str): Resource name.
+        resource(str): A string that identifies the URI for the resource.
+
+    .. versionsince:: 1.9 Changed to `RestResource` from `Resource`.
     """
     def get_resource(self):
+        """Make a request against this REST resource.
+           Returns:
+               dict: JSON response.
+        """
         return self.rest_client.make_request(self.resource)
 
 
@@ -1121,9 +1601,157 @@ def get_view_obj(_view, rc):
                     return view
     return None
 
-
 class StreamingAnalyticsService(object):
-    """Streaming Analytics service running on IBM Bluemix cloud platform.
+    """Streaming Analytics service running on IBM Cloud.
+    """
+    def __init__(self, rest_client, credentials):
+        # If IAM, create a V2 delegator, if basic http auth, create a V1 delegator
+        #
+        # Delegators are required because we need to keep StreamingAnalyticsService
+        # around for backwards compatibility, yet it also needs to work with basic
+        # and IAM authentication.
+        if 'v2_rest_url' in credentials and 'userid' not in credentials and 'password' not in credentials:
+            self._delegator = _StreamingAnalyticsServiceV2Delegator(rest_client, credentials)
+        else:
+            self._delegator = _StreamingAnalyticsServiceV1Delegator(rest_client, credentials)
+
+    def submit_job(self, bundle, job_config=None):
+        """Submit a Streams Application Bundle (sab file) to
+        this Streaming Analytics service.
+        
+        Args:
+            bundle(str): path to a Streams application bundle (sab file)
+                containing the application to be submitted
+            job_config(JobConfig): a job configuration overlay
+        
+        Returns:
+            dict: JSON response from service containing 'name' field with unique
+                job name assigned to submitted job, or, 'error_status' and
+                'description' fields if submission was unsuccessful.
+        """
+        return self._delegator._submit_job(bundle=bundle, job_config=job_config)
+
+    def cancel_job(self, job_id=None, job_name=None):
+        """Cancel a running job.
+
+        Args:
+            job_id (str, optional): Identifier of job to be canceled.
+            job_name (str, optional): Name of job to be canceled.
+
+        Returns:
+            dict: JSON response for the job cancel operation.
+        """
+        return self._delegator.cancel_job(job_id=job_id, job_name = job_name)
+
+    def start_instance(self):
+        """Start the instance for this Streaming Analytics service.
+
+        Returns:
+            dict: JSON response for the instance start operation.
+        """
+        return self._delegator.start_instance()
+
+    def stop_instance(self):
+        """Stop the instance for this Streaming Analytics service.
+
+        Returns:
+            dict: JSON response for the instance start operation.
+        """
+        return self._delegator.stop_instance()
+
+    def get_instance_status(self):
+        """Get the status the instance for this Streaming Analytics service.
+
+        Returns:
+            dict: JSON response for the instance status operation.
+        """
+        return self._delegator.get_instance_status()
+
+class _StreamingAnalyticsServiceV2Delegator(object):
+    """Delegator for IAM access to a Streaming Analytics service
+    """
+    def __init__(self, rest_client, credentials):
+        """
+        Args:
+            rest_client (_IAMStreamsRestClient): The client used to make REST calls.
+            credentials (str): credentials for accessing Streaming Analytics service.
+        """
+        self.rest_client = rest_client
+        self._credentials = credentials
+        self._v2_rest_url = self._credentials[_IAMConstants.V2_REST_URL]
+        self._jobs_url = None
+
+    def _get_jobs_url(self):
+        """Get & save jobs URL from the status call."""
+        if self._jobs_url is None:
+            self.get_instance_status()
+            if self._jobs_url is None:
+                raise ValueError("Cannot obtain jobs URL")
+        return self._jobs_url
+
+    def _submit_job(self, bundle, job_config):
+        sab_name = os.path.basename(bundle)
+
+        job_options = job_config.as_overlays() if job_config else {}
+
+        with open(bundle, 'rb') as bundle_fp:
+            files = [
+                ('bundle_file', (sab_name, bundle_fp, 'application/octet-stream')),
+                ('job_options', ('job_options', json.dumps(job_options), 'application/json'))
+                ]
+            res = self.rest_client.session.post(self._get_jobs_url(),
+                headers = {'Authorization' : self.rest_client._get_authorization(), 'Accept' : 'application/json'},
+                files=files)
+            self.rest_client.handle_http_errors(res)
+            return res.json()
+
+    def cancel_job(self, job_id=None, job_name=None):
+        if job_id is None and job_name is None:
+            raise ValueError("Please specify either the job id or job name when cancelling a job.")
+        
+        if job_id is None:
+            # Get the job id using the job name, since it's required by the REST API
+            res = self.rest_client.make_request(self.get_jobs_url())
+            self.rest_client.handle_http_errors(res)
+            for job in res['resources']:
+                if job['name'] == job_name:
+                    # Find the correct job_id, set it
+                    job_id = job['id']
+
+        # Cancel the job using the job id
+        cancel_url = self._get_jobs_url() + '/' + str(job_id)
+        headers = {'Authorization' : self.rest_client._get_authorization(),
+                  'Accept' : 'application/json'}
+        res = self.rest_client.session.delete(cancel_url, headers=headers)
+        self.rest_client.handle_http_errors(res)
+        return res.json()
+
+    def start_instance(self):
+        res = self.rest_client.session.patch(self._v2_rest_url, json={'state' : 'STARTED'},
+                               headers = {'Authorization' : self.rest_client._get_authorization(),
+                                          'Content-Type' : 'application/json',
+                                          'Accept' : 'application/json'})
+        self.rest_client.handle_http_errors(res)
+        return res.json()
+
+    def stop_instance(self):
+        res = self.rest_client.session.patch(self._v2_rest_url, json={'state' : 'STOPPED'},
+                               headers = {'Authorization' : self.rest_client._get_authorization(),
+                                          'Content-Type' : 'application/json',
+                                          'Accept' : 'application/json'})
+        self.rest_client.handle_http_errors(res)
+        return res.json()
+
+    def get_instance_status(self):
+        resp = self.rest_client.make_request(self._v2_rest_url)
+        # Since we are here, see if we can save the jobs url
+        if self._jobs_url is None and 'jobs' in resp:
+            self._jobs_url = resp['jobs']
+        return resp
+
+
+class _StreamingAnalyticsServiceV1Delegator(object):
+    """Delegator for pre-IAM access to a Streaming Analytics service
     """
     def __init__(self, rest_client, credentials):
         """
@@ -1136,6 +1764,22 @@ class StreamingAnalyticsService(object):
 
     def _get_url(self, req_name):
         return self._credentials['rest_url'] + self._credentials[req_name]
+
+    def _submit_job(self, bundle, job_config):
+        sab_name = os.path.basename(bundle)
+
+        url = self._get_url('jobs_path')
+        params = {'bundle_id': sab_name}
+        job_options = {}
+        if job_config is not None:
+            job_config._add_overlays(job_options)
+
+        with open(bundle, 'rb') as bundle_fp:
+            files = [
+                ('bundle_file', (sab_name, bundle_fp, 'application/octet-stream')),
+                ('job_options', ('job_options', json.dumps(job_options), 'application/json'))
+                ]
+            return self.rest_client.session.post(url=url, params=params, files=files).json()
 
     def cancel_job(self, job_id=None, job_name=None):
         """Cancel a running job.
@@ -1154,7 +1798,9 @@ class StreamingAnalyticsService(object):
             payload['job_id'] = job_id
 
         jobs_url = self._get_url('jobs_path')
-        return self.rest_client.session.delete(jobs_url, params=payload).json()
+        res = self.rest_client.session.delete(jobs_url, params=payload)
+        self.rest_client.handle_http_errors(res)
+        return res.json()
 
     def start_instance(self):
         """Start the instance for this Streaming Analytics service.
@@ -1163,7 +1809,9 @@ class StreamingAnalyticsService(object):
             dict: JSON response for the instance start operation.
         """
         start_url = self._get_url('start_path')
-        return self.rest_client.session.put(start_url, json={}).json()
+        res = self.rest_client.session.put(start_url, json={})
+        self.rest_client.handle_http_errors(res)
+        return res.json()
 
     def stop_instance(self):
         """Stop the instance for this Streaming Analytics service.
@@ -1172,7 +1820,9 @@ class StreamingAnalyticsService(object):
             dict: JSON response for the instance stop operation.
         """
         stop_url = self._get_url('stop_path')
-        return self.rest_client.session.put(stop_url, json={}).json()
+        res = self.rest_client.session.put(stop_url, json={})
+        self.rest_client.handle_http_errors(res)
+        return res.json()
 
     def get_instance_status(self):
         """Get the status the instance for this Streaming Analytics service.
@@ -1181,4 +1831,51 @@ class StreamingAnalyticsService(object):
             dict: JSON response for the instance status operation.
         """
         status_url = self._get_url('status_path')
-        return self.rest_client.session.get(status_url).json()
+        res = self.rest_client.session.get(status_url)
+        self.rest_client.handle_http_errors(res)
+        return res.json()
+
+class _IAMConstants(object):
+    V2_REST_URL = 'v2_rest_url'
+    """The credentials key for the REST url of the Streaming Analytics service
+    """
+
+    SERVICE_ID = 'iam_serviceid_crn'
+    """Service identifier"""
+
+    API_KEY = 'apikey'
+    """The credentials key for the api key which can be used to retrieve bearer authentication
+    tokens for REST requests using IAM.
+    """
+
+    EXPIRATION = 'expiration'
+    """The key used to retrieve the expiration time of the bearer authentication token from
+    the IAM token response.
+    """
+
+    ACCESS_TOKEN = 'access_token'
+    """The key of the bearer authentication token in the IAM token response.
+    """
+
+    AUTH_BEARER_PREFIX = 'Bearer '
+    """The prefix to append to the bearer token retrieved from IAM when setting the Authentication 
+    HTTP header.
+    """
+
+    GRANT_PARAM = 'grant_type'
+    GRANT_TYPE = 'urn:ibm:params:oauth:grant-type:apikey'
+
+    TOKEN_URL = 'https://iam.bluemix.net/oidc/token'
+    """The url from which to receive bearer authentication tokens for Authorizing REST requests on
+    IBM Cloud.
+    """
+
+    TOKEN_URL_STAGE1 = 'https://iam.stage1.bluemix.net/oidc/token'
+    """The url from which to receive bearer authentication tokens for Authorizing REST requests on
+    stage1 IBM Cloud.
+    """
+
+    EXPIRY_PAD_MS = 300000
+    """Padding to ensure that a new IAM token is retrieved when the current token is due to expire
+    in less than five minutes.
+    """

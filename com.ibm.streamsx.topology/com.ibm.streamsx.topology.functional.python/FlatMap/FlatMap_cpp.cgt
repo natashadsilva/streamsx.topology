@@ -8,36 +8,69 @@ using namespace streamsx::topology;
 
 <%SPL::CodeGen::implementationPrologue($model);%>
 
+@include "../../opt/python/codegen/pysplenablecheckpointing.cgt"
 @include "../pyspltuple.cgt"
 <%
  # Select the Python wrapper function
- my $pywrapfunc= $pystyle . '_in__pickle_iter';
+ my $pywrapfunc= $pystyle_fn . '_in__pickle_iter';
 %>
+
+// Default case is pass by pickled value in which case
+// flat map code is nothing.
+#define SPLPY_OUT_TUPLE_FLAT_MAP_BY_REF(splv, pyv, occ)
+    
 
 // Constructor
 MY_OPERATOR::MY_OPERATOR() :
    funcop_(NULL),
-   pyInNames_(NULL)
+   pyInStyleObj_(NULL),
+   occ_(-1)
 { 
-    funcop_ = new SplpyFuncOp(this, "<%=$pywrapfunc%>");
+    const char * wrapfn = "<%=$pywrapfunc%>";
 
-<% if ($pystyle eq 'dict') { %>
-     SplpyGIL lock;
- 
-     pyInNames_ = streamsx::topology::Splpy::pyAttributeNames(
-               getInputPortAt(0));
-<% } %>
+<%
+# If occ parameter is positive then pass-by-ref is possible
+# Generate code to allow pass by ref but only use when
+# not connected to a PE output port.
+
+ my $oc = $model->getParameterByName("outputConnections");
+
+ if ($oc) {
+    my $occ = $oc->getValueAt(0)->getSPLExpression();
+    if ($occ > 0) {
+        my $pybyrefwrapfunc = $pystyle_fn . '_in__object_iter';
+%>
+
+// Macro inserts an if passing by ref check then pass tuple
+// by ref, else use the existing code.
+#undef SPLPY_OUT_TUPLE_FLAT_MAP_BY_REF
+#define SPLPY_OUT_TUPLE_FLAT_MAP_BY_REF(splv, pyv, occ) \
+    if (occ_ > 0) { \
+        pyTupleByRef(splv, pyv, occ_); \
+    } else
+
+    if (!this->getOutputPortAt(0).isConnectedToAPEOutputPort()) {
+       // pass by reference
+       wrapfn = "<%=$pybyrefwrapfunc%>";
+       occ_ = <%=$occ%>;
+    }
+<%
+    } 
+ }
+%>
+
+    funcop_ = new SplpyFuncOp(this, wrapfn);
+
+@include "../pyspltuple_constructor.cgt"
 }
 
 // Destructor
 MY_OPERATOR::~MY_OPERATOR() 
 {
-<% if ($pystyle eq 'dict') { %>
-    if (pyInNames_) {
+  if (pyInStyleObj_) {
       SplpyGIL lock;
-      Py_DECREF(pyInNames_);
-    }
-<% } %>
+      Py_DECREF(pyInStyleObj_);
+  }
 
   delete funcop_;
 }
@@ -45,32 +78,26 @@ MY_OPERATOR::~MY_OPERATOR()
 // Notify pending shutdown
 void MY_OPERATOR::prepareToShutdown() 
 {
+    AutoLock stateLock(funcop_);
     funcop_->prepareToShutdown();
 }
 
 // Tuple processing for non-mutating ports
 void MY_OPERATOR::process(Tuple const & tuple, uint32_t port)
 {
-  IPort0Type const &ip = static_cast<IPort0Type const &>(tuple);
-
-<%
-print splpy_inputtuple2value($pystyle);
-%>
+@include "../pyspltuple2value.cgt"
   
   std::vector<OPort0Type> output_tuples; 
   
-  {
-<%if ($pystyle eq 'dict') {%>
-@include "../pyspltuple2dict.cgt"
-<%}%>
-
+  try {
+    AutoLock stateLock(funcop_);
     SplpyGIL lock;
 
     PyObject * pyIterator = streamsx::topology::pySplProcessTuple(funcop_->callable(), value);
 
     if (pyIterator == 0) {
-         throw SplpyGeneral::pythonException(
-               getParameterValues("pyName").at(0)->getValue().toString());
+         throw SplpyExceptionInfo::pythonError(
+               getParameterValues("pyName").at(0)->getValue().toString().c_str());
     }
     if (SplpyGeneral::isNone(pyIterator)) {
         Py_DECREF(pyIterator);
@@ -83,18 +110,31 @@ print splpy_inputtuple2value($pystyle);
 
       // construct spl blob and tuple from pickled return value
       OPort0Type otuple;
-      pySplValueFromPyObject(otuple.get___spl_po(), item);
-      Py_DECREF(item); 
+
+      SPLPY_OUT_TUPLE_FLAT_MAP_BY_REF(otuple.get___spl_po(), item, occ_)
+      {
+          pySplValueFromPyObject(otuple.get___spl_po(), item);
+          Py_DECREF(item); 
+      }
       output_tuples.push_back(otuple);
     }
     Py_DECREF(pyIterator);
-  } // end lock
+  } catch (const streamsx::topology::SplpyExceptionInfo& excInfo) {
+    SPLPY_OP_HANDLE_EXCEPTION_INFO_GIL(excInfo);
+  }
+
   
   // submit tuples
   for(int i = 0; i < output_tuples.size() && !getPE().getShutdownRequested(); i++) {
     submit(output_tuples[i], 0);
   } 
   
+}
+
+void MY_OPERATOR::process(Punctuation const & punct, uint32_t port)
+{
+   AutoLock lock(funcop_);
+   forwardWindowPunctuation(punct);
 }
 
 <%SPL::CodeGen::implementationEpilogue($model);%>

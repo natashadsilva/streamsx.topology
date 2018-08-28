@@ -6,6 +6,7 @@ package com.ibm.streamsx.topology.test.spl;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 
 import java.io.File;
 import java.util.Collections;
@@ -18,16 +19,17 @@ import java.util.concurrent.TimeUnit;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.ibm.json.java.JSONObject;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.ibm.streams.flow.handlers.MostRecent;
 import com.ibm.streams.operator.StreamSchema;
 import com.ibm.streams.operator.Tuple;
 import com.ibm.streams.operator.Type;
 import com.ibm.streams.operator.Type.MetaType;
+import com.ibm.streams.operator.types.RString;
 import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.context.ContextProperties;
 import com.ibm.streamsx.topology.function.Supplier;
-import com.ibm.streamsx.topology.generator.spl.SPLGenerator;
 import com.ibm.streamsx.topology.spl.SPL;
 import com.ibm.streamsx.topology.spl.SPLStream;
 import com.ibm.streamsx.topology.test.TestTopology;
@@ -196,9 +198,13 @@ public class SPLOperatorsTest extends TestTopology {
         assertEquals(i32, tuple.getInt("i32"));
         assertEquals(i64, tuple.getLong("i64"));
         assertEquals(ui8, tuple.getByte("ui8"));
+        assertEquals("255", tuple.getString("ui8"));
         assertEquals(ui16, tuple.getShort("ui16"));
+        assertEquals("65534", tuple.getString("ui16"));
         assertEquals(ui32, tuple.getInt("ui32"));
+        assertEquals("4294967293", tuple.getString("ui32"));
         assertEquals(ui64, tuple.getLong("ui64"));
+        assertEquals("18446744073709551612", tuple.getString("ui64"));
         assertEquals(f32, tuple.getFloat("f32"), 0.001);
         assertEquals(f64, tuple.getDouble("f64"), 0.001);
     }
@@ -228,14 +234,89 @@ public class SPLOperatorsTest extends TestTopology {
         // Test operator parameters with literal values
         testOpParams("testParamLiterals", new OpParamAdder());
     }
+    
+    /**
+     * Test we can invoke an SPL operator with various parameter types,
+     * where the type is an optional type.
+     */
+    private void testOpParamsOptionalTypes(String testName, OpParamAdder opParamAdder)
+        throws Exception {
+        
+        assumeTrue(!isStreamingAnalyticsRun()); // TODO: Uses Stream handler
+        
+        Topology topology = new Topology(testName); 
+        opParamAdder.init(topology, getConfig());
+        // getConfig().put(ContextProperties.KEEP_ARTIFACTS, true);
+        
+        StreamSchema schema = Type.Factory.getStreamSchema(
+                "tuple<"
+                + "rstring r"
+                + ", optional<rstring> orv"
+                + ", optional<rstring> ornv"
+                + ", int32 i32"
+                + ", optional<int32> oi32v"
+                + ", optional<int32> oi32nv"
+                + " >");
+        
+        Random rand = new Random();
+        String r = "test    X\tY\"Lit\nerals\\nX\\tY " + rand.nextInt();
+        opParamAdder.put("r", r);
+        String orv = "test    X\tY\"Lit\nerals\\nX\\tY " + rand.nextInt();
+        opParamAdder.put("orv", orv);
+        // test setting optional type to null by using null in Map
+        opParamAdder.put("ornv", null);
+        
+        int i32 = rand.nextInt();
+        opParamAdder.put("i32", i32); 
+        int oi32v = rand.nextInt();
+        opParamAdder.put("oi32v", oi32v); 
+        // test setting optional type to null by using createNullValue() in Map
+        opParamAdder.put("oi32nv", SPL.createNullValue());
+   
+        SPL.addToolkit(topology, new File(getTestRoot(), "spl/testtkopt"));
+        SPLStream paramTuple = SPL.invokeSource(topology, "testgen::TypeLiteralTester", opParamAdder.getParams(), schema);
+
+        // paramTuple.print();
+        // paramTuple.filter(new AllowAll<Tuple>());
+        
+        Tester tester = topology.getTester();
+        
+        Condition<Long> expectedCount = tester.tupleCount(paramTuple, 1);
+        MostRecent<Tuple> mr = tester.splHandler(paramTuple, new MostRecent<Tuple>());
+
+        // getConfig().put(ContextProperties.KEEP_ARTIFACTS, true);
+        complete(tester, expectedCount, 10, TimeUnit.SECONDS);
+
+        assertTrue(expectedCount.toString(), expectedCount.valid());
+        Tuple tuple = mr.getMostRecentTuple();
+        // System.out.println("tuple: " + tuple);
+        
+        assertEquals(r, tuple.getString("r"));
+        assertEquals(orv, tuple.getString("orv"));
+        assertEquals(new RString(orv), tuple.getObject("orv"));
+        assertEquals("null", tuple.getString("ornv"));
+        assertEquals(null, tuple.getObject("ornv"));
+        assertEquals(i32, tuple.getInt("i32"));
+        assertEquals(new Integer(oi32v), tuple.getObject("oi32v"));
+        assertEquals(null, tuple.getObject("oi32nv"));
+    }
+
+    @Test
+    public void testParamLiteralsOptionalTypes() throws Exception {
+        // Test operator parameters with literal values for optional types
+        assumeOptionalTypes();
+        testOpParamsOptionalTypes("testParamLiteralsOptionalTypes", new OpParamAdder());
+    }
 
     @Test
     public void testSubmissionParamsWithDefault() throws Exception {
+        assumeTrue(!isStreamingAnalyticsRun()); // TODO: Uses Stream handler
+        
         // Test operator parameters with submission time values with defaults
         testOpParams("testSubmissionParamsWithDefault", new OpParamAdder() {
             void put(String opParamName, Object opParamValue) {
                 Supplier<?> sp;
-                if (!(opParamValue instanceof JSONObject))
+                if (!(opParamValue instanceof JsonObject))
                     sp = top.createSubmissionParameter(opParamName, opParamValue);
                 else
                     sp = SPL.createSubmissionParameter(top, opParamName, opParamValue, true);
@@ -246,12 +327,13 @@ public class SPLOperatorsTest extends TestTopology {
 
     @Test
     public void testSubmissionParamsWithoutDefault() throws Exception {
+        assumeTrue(!isStreamingAnalyticsRun()); // TODO: Uses Stream handler
            
         // Test operator parameters with submission time values without defaults
         testOpParams("testSubmissionParamsWithoutDefault", new OpParamAdder() {
             void put(String opParamName, Object opParamValue) {
                 Supplier<?> sp;
-                if (!(opParamValue instanceof JSONObject))
+                if (!(opParamValue instanceof JsonObject))
                     sp = top.createSubmissionParameter(opParamName,
                             (Class<?>)opParamValue.getClass());
                 else
@@ -264,29 +346,26 @@ public class SPLOperatorsTest extends TestTopology {
                     submitParams = new HashMap<>();
                     config.put(ContextProperties.SUBMISSION_PARAMS, submitParams);
                 }
-                if (!(opParamValue instanceof JSONObject))
+                if (!(opParamValue instanceof JsonObject))
                     submitParams.put(opParamName, opParamValue);
                 else
-                    submitParams.put(opParamName, pvToStr((JSONObject)opParamValue));
+                    submitParams.put(opParamName, pvToStr((JsonObject)opParamValue));
             }
         });
     }
     
-    private String pvToStr(JSONObject jo) {
+    private String pvToStr(JsonObject jo) {
         // A Client of the API shouldn't find itself in
         // a place to need this.  It's just an artifact of
         // the way these tests are composed plus lack of a 
         // public form of valueToString(SPL.createValue(...)).
 
-        String type = (String) jo.get("type");
+        String type = jo.get("type").getAsString();
         if (!"__spl_value".equals(type))
             throw new IllegalArgumentException("jo " + jo);
-        JSONObject value = (JSONObject) jo.get("value");
-        String metaType = (String) value.get("metaType");
-        Object v = value.get("value");
-        if (metaType.startsWith("UINT"))
-            return SPLGenerator.unsignedString(v);
-        else
-            return v.toString();
+        JsonObject value = jo.get("value").getAsJsonObject();
+        String metaType = value.get("metaType").getAsString();
+        JsonElement v = value.get("value");
+        return v.getAsString();
     }
 }

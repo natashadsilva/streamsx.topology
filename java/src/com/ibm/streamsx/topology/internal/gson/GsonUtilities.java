@@ -12,6 +12,7 @@ import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.ibm.streamsx.topology.function.Consumer;
 
 public class GsonUtilities {
@@ -24,6 +25,41 @@ public class GsonUtilities {
     
     public static String toJson(JsonElement element) {
         return gson().toJson(element);
+    }
+    
+    /**
+     * Add value to o as property, converting as needed.
+     * Supports JsonElment,String,Number,Boolean, Collection{String,Number,Boolean}
+     */
+    public static void addToObject(JsonObject o, String property, Object value) {
+        if (value instanceof JsonElement)
+            o.add(property, (JsonElement) value);
+        else if (value instanceof String)
+            o.addProperty(property,(String) value);
+        else if (value instanceof Number)
+            o.addProperty(property,(Number) value);
+        else if (value instanceof Boolean)
+            o.addProperty(property,(Boolean) value);
+        else if (value instanceof Collection) {
+            JsonArray sa = new JsonArray();
+            Collection<?> values = (Collection<?>) value;
+            for (Object ov : values) {
+                if (ov instanceof JsonElement)
+                    sa.add((JsonElement) ov);
+                else if (ov instanceof String)
+                    sa.add(new JsonPrimitive((String) ov));
+                else if (ov instanceof Number)
+                    sa.add(new JsonPrimitive((Number) ov));
+                else if (ov instanceof Boolean)
+                    sa.add(new JsonPrimitive((Boolean) ov));
+                else
+                    throw new UnsupportedOperationException("JSON:" + ov.getClass());  
+            }
+            
+            o.add(property, sa);
+        }
+        else
+            throw new UnsupportedOperationException("JSON:" + value.getClass());          
     }
     
     /**
@@ -70,6 +106,16 @@ public class GsonUtilities {
         }
         return null;
     }
+    
+    public static boolean intersect(JsonArray a1, JsonArray a2) {
+        for (JsonElement e : a1) {
+            if (a2.contains(e))
+                return true;
+        }
+        return false;
+    }
+    
+    
     /**
      * Return a Json object.
      * Returns null if the object is not present or null.
@@ -84,6 +130,9 @@ public class GsonUtilities {
         return null;
     }
     
+    /**
+     * Return is empty meaning null, JSON null or an empty object.
+     */
     public static boolean jisEmpty(JsonObject object) {
         return object == null || object.isJsonNull() || object.entrySet().isEmpty();
     }
@@ -121,6 +170,9 @@ public class GsonUtilities {
         }
         return false;
     }
+    public static int jint(JsonObject object, String property) {
+        return object.get(property).getAsInt();
+    }
     
     public static JsonObject first(Collection<JsonObject> objects) {
         return objects.iterator().next();
@@ -134,6 +186,14 @@ public class GsonUtilities {
         return jobject(nester, property);
     }
     
+    
+    public static boolean hasAny(JsonObject object, Collection<String> coll){
+        for(String key : coll){
+            if(object.has(key))
+                return true;
+        }
+        return false;
+    }
     /**
      * Get a json object from a property or properties.
      * @param object
@@ -180,6 +240,30 @@ public class GsonUtilities {
         }
 
         return item; 
+    }
+    
+    /**
+     * Like objectCreate but the last element is created as an array if
+     * it doesn't already exist.
+     */
+    public static JsonArray arrayCreate(JsonObject object, String ...property) {
+        
+        assert property.length > 0;
+        
+        if (property.length > 1) {
+            String[] objprops = new String[property.length - 1];
+            System.arraycopy(property, 0, objprops, 0, objprops.length);
+            object = objectCreate(object, objprops);
+        }
+        
+        String arrayProperty = property[property.length - 1];
+        
+        if (object.has(arrayProperty))
+            return object.getAsJsonArray(arrayProperty);
+        
+        JsonArray array = new JsonArray();
+        object.add(arrayProperty, array);
+        return array;
     }
     
     /**

@@ -1,4 +1,11 @@
+/*
+# Licensed Materials - Property of IBM
+# Copyright IBM Corp. 2015,2017
+ */
 package com.ibm.streamsx.topology.builder;
+
+import com.google.gson.JsonObject;
+import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 
 /**
  * A parameter to an operator is represented by
@@ -7,6 +14,27 @@ package com.ibm.streamsx.topology.builder;
  *
  */
 public interface JParamTypes {
+    
+    /**
+     * Create a JSON representation of a parameter.
+     * @param type
+     * @param value
+     * @return
+     */
+    static JsonObject create(String type, Object value) {
+        JsonObject param = new JsonObject();
+        
+        GsonUtilities.addToObject(param, "value", value);
+
+        if (type != null) {
+            param.addProperty("type", type);
+            if (JParamTypes.TYPE_ENUM.equals(type))
+                param.addProperty("enumclass", value.getClass().getCanonicalName());              
+        }
+        
+        return param;
+    }
+    
 	/**
 	 * An SPL enum value as a string.
 	 */

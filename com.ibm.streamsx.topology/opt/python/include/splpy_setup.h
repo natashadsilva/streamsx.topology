@@ -32,13 +32,7 @@
 #include <TopologySplpyResource.h>
 
 #include <SPL/Runtime/Common/RuntimeException.h>
-#include <SPL/Runtime/Type/Meta/BaseType.h>
 #include <SPL/Runtime/ProcessingElement/PE.h>
-#include <SPL/Runtime/Operator/Port/OperatorPort.h>
-#include <SPL/Runtime/Operator/Port/OperatorInputPort.h>
-#include <SPL/Runtime/Operator/Port/OperatorOutputPort.h>
-#include <SPL/Runtime/Operator/OperatorContext.h>
-#include <SPL/Runtime/Operator/Operator.h>
 
 #include "splpy_sym.h"
 #include "splpy_ec.h"
@@ -82,6 +76,7 @@ class SplpySetup {
         SplpySym::fixSymbols(pydl);
         startPython(pydl);
         setupNone(pydl);
+        setupMemoryViewCheck(pydl);
         runSplSetup(pydl, spl_setup_py_path);
         setupClasses();
         return pydl;
@@ -100,13 +95,39 @@ class SplpySetup {
         PyObject * none =
                 ((__splpy_bv) dlsym(pydl, "Py_BuildValue"))("");
         
-        // Call the isNone passing in none which will
+        // Call isNone() and getNone() passing in none which will
         // be the first caller (as this is in setup)
         // and thus set the local pointer to None (effectively Py_None).
         bool in = SplpyGeneral::isNone(none);
         if (!in) {
           throw SplpyGeneral::generalException("setup",
-                        "Internal error - None handling");
+                        "Internal error - None handling: isNone");
+        }
+        PyObject * ret = SplpyGeneral::getNone(none);
+        if (ret != none) {
+          throw SplpyGeneral::generalException("setup",
+                        "Internal error - None handling: getNone");
+        }
+        Py_DECREF(ret);
+    }
+
+    /*
+     *  Load 'PyMemoryView_Type' dynamically for
+     *  our our checkmemoryview.
+     */
+    static void setupMemoryViewCheck(void * pydl) {
+
+        PyObject *mvta = (PyObject *) dlsym(pydl, "PyMemoryView_Type");
+
+        // Call the checkMemoryView passing in none which will
+        // be the first caller (as this is in setup)
+        // and thus set the local pointer to &PyMemoryView_Type
+        bool notmv = SplpyGeneral::checkMemoryView(mvta);
+        if (notmv) {
+          // Since the type of memoryview is a type, not
+          // a memoryview then the call should be false.
+          throw SplpyGeneral::generalException("setup",
+                        "Internal error - Memoryview_Check handling");
         }
     }
 
@@ -116,6 +137,8 @@ class SplpySetup {
           SplpyGeneral::loadFunction("streamsx.spl.types", "Timestamp"));
        SplpyGeneral::timestampGetter(
           SplpyGeneral::loadFunction("streamsx.spl.types", "_get_timestamp_tuple"));
+       SplpyGeneral::decimalClass(
+          SplpyGeneral::loadFunction("decimal", "Decimal"));
    }
 
   private:
@@ -151,13 +174,13 @@ class SplpySetup {
  
 #if PY_MAJOR_VERSION == 3
         // When SPL compile is optimized disable Python
-        // assertions, equivalent to -OO
+        // assertions, equivalent to -O
         // Seems to cause module loading issues from pyc files
         // on Python 2.7 so only optmize on Python 3
         if (SPL::ProcessingElement::pe().isOptimized()) {
            if (getenv("PYTHONOPTIMIZE") == NULL) {
-               SPLAPPTRC(L_DEBUG, "Setting optimized Python runtime (-OO)", "python");
-               setenv("PYTHONOPTIMIZE", "2", 1);
+               SPLAPPTRC(L_DEBUG, "Setting optimized Python runtime (-O)", "python");
+               setenv("PYTHONOPTIMIZE", "1", 1);
           }
         }
 #endif
@@ -205,17 +228,17 @@ class SplpySetup {
           typedef PyThreadState * (*__splpy_est)(void);
 
 
-#if __SPLPY_EC_MODULE_OK
 {
-          SPLAPPTRC(L_DEBUG, "Including Python extension: _streamsx_ec", "python");
 
+#if PY_MAJOR_VERSION == 3
+          SPLAPPTRC(L_DEBUG, "Including Python extension: _streamsx_ec", "python");
           typedef PyObject *(__splpy_initfunc)(void);
           typedef int (*__splpy_iai)(const char * name, __splpy_initfunc);
           __splpy_iai _SPLPyImport_AppendInittab =
              (__splpy_iai) dlsym(pydl, "PyImport_AppendInittab");
           _SPLPyImport_AppendInittab(__SPLPY_EC_MODULE_NAME, &init_streamsx_ec);
-}
 #endif
+}
 
           SPLAPPTRC(L_DEBUG, "Starting Python runtime", "python");
 
@@ -240,7 +263,11 @@ class SplpySetup {
           const char *argv[] = {""};
           _SPLPySys_SetArgvEx(1, (char **) argv, 0);
 #endif
-
+#if PY_MAJOR_VERSION == 2
+          SPLAPPTRC(L_DEBUG, "Including Python extension: _streamsx_ec", "python");
+          init_streamsx_ec();
+#endif
+         
           _SPLPyEval_InitThreads();
           _SPLPyEval_SaveThread();
 
@@ -276,6 +303,8 @@ class SplpySetup {
           throw SplpyGeneral::pythonException("splpy_setup.py");
         }
         SPLAPPTRC(L_DEBUG, "Python script splpy_setup.py ran ok.", "python");
+
+        SplpyGeneral::callVoidFunction("streamsx.ec", "_setup", NULL, NULL);
     }
 };
 

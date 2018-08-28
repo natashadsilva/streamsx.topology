@@ -17,14 +17,10 @@
 #ifndef __SPL__SPLPY_FUNCOP_H
 #define __SPL__SPLPY_FUNCOP_H
 
-#include "splpy_general.h"
-#include "splpy_setup.h"
 #include "splpy_op.h"
-#include "splpy_ec_api.h"
 
 #include <SPL/Runtime/Operator/ParameterValue.h>
-#include <SPL/Runtime/Operator/OperatorContext.h>
-#include <SPL/Runtime/Operator/Operator.h>
+
 
 namespace streamsx {
   namespace topology {
@@ -33,23 +29,47 @@ class SplpyFuncOp : public SplpyOp {
   public:
 
       SplpyFuncOp(SPL::Operator * op, const std::string & wrapfn) :
-         SplpyOp(op, "/opt/python/packages/streamsx/topology")
+        SplpyOp(op, "/opt/python/packages/streamsx/topology")
       {
+         setSubmissionParameters();
          addAppPythonPackages();
          loadAndWrapCallable(wrapfn);
       }
- 
-      ~SplpyFuncOp() {
-      }
-
+      
   private:
-
       int hasParam(const char *name) {
           return op()->getParameterNames().count(name);
       }
 
       const SPL::rstring & param(const char *name) {
           return op()->getParameterValues(name)[0]->getValue();
+      }
+
+      /**
+       * Set submission parameters. Note all functional operators
+       * share the same submission parameters (they are topology wide)
+       * and thus each operator will execute this code. They will
+       * all have the same values.
+       *
+       * Note at this point all the parameters are rstring values,
+       * the Python code does any type conversion.
+      */
+      void setSubmissionParameters() {
+          if (hasParam("submissionParamNames")) {
+              SplpyGIL lock;
+
+              const SPL::Operator::ParameterValueListType& names = op()->getParameterValues("submissionParamNames");
+
+              const SPL::Operator::ParameterValueListType& values = op()->getParameterValues("submissionParamValues");
+
+              for (int i = 0; i < names.size(); i++) {
+                  PyObject *n = pyUnicode_FromUTF8(names[i]->getValue());
+                  PyObject *v = pyUnicode_FromUTF8(values[i]->getValue());
+
+                  streamsx::topology::SplpyGeneral::callVoidFunction(
+                        "streamsx.ec", "_set_submit_param", n, v);
+              }
+          }
       }
 
       /**
@@ -74,15 +94,23 @@ class SplpyFuncOp : public SplpyOp {
              appCallable = pyUnicode_FromUTF8(param("pyCallable").c_str());
              Py_DECREF(appClass);
 
-#if __SPLPY_EC_MODULE_OK
              setopc();
-#endif
+          }
+
+          PyObject *extraArg = NULL;
+          if (op()->getNumberOfOutputPorts() == 1) {
+              extraArg = streamsx::topology::Splpy::pyAttributeNames(
+               op()->getOutputPortAt(0));
           }
 
           setCallable(SplpyGeneral::callFunction(
-               "streamsx.topology.runtime", wrapfn, appCallable, NULL));
+               "streamsx.topology.runtime", wrapfn, appCallable, extraArg));
       }
 
+      virtual bool isStateful() {
+        return static_cast<SPL::boolean>(op()->getParameterValues("pyStateful")[0]->getValue());
+      }
+ 
       /*
        *  Add any packages in the application directory
        *  to the Python path. The application directory
@@ -97,8 +125,9 @@ class SplpyFuncOp : public SplpyOp {
             streamsx::topology::pyUnicode_FromUTF8(param("toolkitDir"));
 
           SplpyGeneral::callVoidFunction(
-              "streamsx.topology.runtime", "setupOperator", tkDir, NULL);
+              "streamsx._streams._runtime", "_setup_operator", tkDir, NULL);
       }
+
 };
 
 }}

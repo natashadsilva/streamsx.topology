@@ -7,35 +7,31 @@ using namespace streamsx::topology;
 
 <%SPL::CodeGen::implementationPrologue($model);%>
 
+@include "../../opt/python/codegen/pysplenablecheckpointing.cgt"
 @include "../pyspltuple.cgt"
 <%
  # Select the Python wrapper function
- my $pywrapfunc= $pystyle . '_in';
+ my $pywrapfunc= $pystyle_fn . '_in';
 %>
 
 // Constructor
 MY_OPERATOR::MY_OPERATOR() :
    funcop_(NULL),
-   pyInNames_(NULL)
+   pyInStyleObj_(NULL)
 {
     funcop_ = new SplpyFuncOp(this, "<%=$pywrapfunc%>");
-<% if ($pystyle eq 'dict') { %>
-     SplpyGIL lock;
-     pyInNames_ = streamsx::topology::Splpy::pyAttributeNames(
-               getInputPortAt(0));
-<% } %>
+
+@include "../pyspltuple_constructor.cgt"
 }
 
 
 // Destructor
 MY_OPERATOR::~MY_OPERATOR() 
 {
-<% if ($pystyle eq 'dict') { %>
-    if (pyInNames_) {
+    if (pyInStyleObj_) {
       SplpyGIL lock;
-      Py_DECREF(pyInNames_);
+      Py_DECREF(pyInStyleObj_);
     }
-<% } %>
 
     delete funcop_;
 }
@@ -43,34 +39,41 @@ MY_OPERATOR::~MY_OPERATOR()
 // Notify pending shutdown
 void MY_OPERATOR::prepareToShutdown() 
 {
+    AutoLock lock(funcop_);
     funcop_->prepareToShutdown();
 }
 
 // Tuple processing for non-mutating ports
 void MY_OPERATOR::process(Tuple const & tuple, uint32_t port)
 {
-  IPort0Type const &ip = static_cast<IPort0Type const &>(tuple);
+try {
+@include "../pyspltuple2value.cgt"
 
-<%
-print splpy_inputtuple2value($pystyle);
-%>
-
-<%if ($pystyle eq 'dict') {%>
-@include "../pyspltuple2dict.cgt"
+  AutoLock stateLock(funcop_);
+<%if ($pystyle_fn eq 'dict' || $pystyle_fn eq 'tuple') {%>
 
   OPort0Type otuple;
-  otuple.assignFrom(ip, false);
+  otuple.assignFrom(<%=$iport->getCppTupleName()%>, false);
   otuple.set___spl_hash(streamsx::topology::Splpy::pyTupleHash(funcop_->callable(), value));
 
-<%}%>
+<%} else { %>
 
-<%if ($pystyle ne 'dict') {%>
-
+  // value is the first matching attribute and an SPL:: reference
   OPort0Type otuple(value,
        streamsx::topology::Splpy::pyTupleHash(funcop_->callable(), value));
 <%}%>
+
   // submit tuple
   submit(otuple, 0);
+} catch (const streamsx::topology::SplpyExceptionInfo& excInfo) {
+  SPLPY_OP_HANDLE_EXCEPTION_INFO_GIL(excInfo);
+}
+}
+
+void MY_OPERATOR::process(Punctuation const & punct, uint32_t port)
+{
+   AutoLock stateLock(funcop_);
+   forwardWindowPunctuation(punct);
 }
 
 <%SPL::CodeGen::implementationEpilogue($model);%>

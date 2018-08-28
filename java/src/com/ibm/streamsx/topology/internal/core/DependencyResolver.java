@@ -4,8 +4,14 @@
  */
 package com.ibm.streamsx.topology.internal.core;
 
+import static com.ibm.streamsx.topology.internal.context.remote.ToolkitRemoteContext.DEP_JAR_LOC;
+import static com.ibm.streamsx.topology.internal.context.remote.ToolkitRemoteContext.DEP_OP_JAR_LOC;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.array;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.arrayCreate;
+
 import java.io.File;
 import java.io.IOException;
+import java.lang.annotation.Annotation;
 import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -17,22 +23,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.ibm.json.java.JSONArray;
-import com.ibm.json.java.JSONObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.builder.BOperator;
 import com.ibm.streamsx.topology.builder.BOperatorInvocation;
-import com.ibm.streamsx.topology.internal.functional.ops.Functional;
 import com.ibm.streamsx.topology.internal.logic.WrapperFunction;
+import com.ibm.streamsx.topology.internal.messages.Messages;
 
 /**
  * The DependencyResolver class exists to separate the logic of jar
  * resolution/copying from the topology.
  * 
  */
-public class DependencyResolver {
+public class DependencyResolver {    
+    
     private final Map<BOperatorInvocation, Set<Path>> operatorToJarDependencies = new HashMap<>();
-    private final Set<Path> globalDependencies = new HashSet<>();
+    /**
+     * Map of jar paths that are dependencies.
+     * Value is a boolean indicating if it includes a primitive
+     * operator that needs to be part of the generated toolkit.
+     */
+    private final Map<Path, Boolean> globalDependencies = new HashMap<>();
     private final Set<Artifact> globalFileDependencies = new HashSet<>();
 
     private static class Artifact {
@@ -40,7 +53,7 @@ public class DependencyResolver {
         final Path absPath;
         Artifact(String dirName, Path absPath) {
             if (dirName==null || absPath==null)
-                throw new IllegalArgumentException("dstDirName="+dirName+" absPath="+absPath);
+                throw new IllegalArgumentException(Messages.getString("CORE_DIR_NAME_OR_ABS_PATH_NULL"));
             this.dstDirName = dirName;
             this.absPath = absPath;
         }
@@ -75,13 +88,24 @@ public class DependencyResolver {
     public void addJarDependency(String location) throws IllegalArgumentException{
         File f = new File(location);
         if(!f.exists()){
-            throw new IllegalArgumentException("File not found. Invalid "
-      	       + "third party dependency location:"+ f.toPath().toAbsolutePath().toString());
+            throw new IllegalArgumentException(Messages.getString("CORE_THIRD_PARTY_DEP", f.toPath().toAbsolutePath().toString()));
         }
-        globalDependencies.add(f.toPath().toAbsolutePath());    
+        
+        addGlobalDependency(f.toPath().toAbsolutePath(), false); 
+    }
+    
+    private void addGlobalDependency(Path path, boolean containsOps) {
+        
+        if (globalDependencies.containsKey(path)) {
+            boolean jarContainsOps = globalDependencies.get(path);
+            if ((jarContainsOps == containsOps) && !containsOps)
+                return;
+        }
+        globalDependencies.put(path, containsOps);
     }
     
     public void addClassDependency(Class<?> clazz){
+        
         CodeSource source = clazz.getProtectionDomain().getCodeSource();
         if (source == null)
             return;
@@ -89,9 +113,20 @@ public class DependencyResolver {
         try {
             absolutePath = Paths.get(source.getLocation().toURI()).toAbsolutePath();
         } catch (URISyntaxException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         }
-        globalDependencies.add(absolutePath);
+        
+        boolean containsOperator = false;
+        try {
+            @SuppressWarnings("unchecked")
+            Class<? extends Annotation> primOpClass =
+                    (Class<? extends Annotation>) Class.forName("com.ibm.streams.operator.model.PrimitiveOperator");
+            containsOperator  = clazz.isAnnotationPresent(primOpClass);
+        } catch (ClassNotFoundException e) {
+            containsOperator = false;
+        }
+            
+        addGlobalDependency(absolutePath, containsOperator);
     }
 
     public void addJarDependency(BOperatorInvocation op, Object logic) {
@@ -118,7 +153,7 @@ public class DependencyResolver {
         try {
             absolutePath = Paths.get(source.getLocation().toURI()).toAbsolutePath();
         } catch (URISyntaxException e) {
-            e.printStackTrace();
+            throw new RuntimeException(e);
         }
         
         if (operatorToJarDependencies.containsKey(op)) {
@@ -126,6 +161,19 @@ public class DependencyResolver {
         } else {
             operatorToJarDependencies.put(op, new HashSet<Path>());
             operatorToJarDependencies.get(op).add(absolutePath);
+        }
+    }
+
+    /**
+     * Copy dependencies from one operator to another.
+     */
+    public void copyDependencies(BOperatorInvocation source, BOperatorInvocation op) {
+        if (operatorToJarDependencies.containsKey(source)) {
+            Set<Path> sourceDeps = operatorToJarDependencies.get(source);
+            if (!operatorToJarDependencies.containsKey(op))
+               operatorToJarDependencies.put(op, new HashSet<>());
+                            
+            operatorToJarDependencies.get(op).addAll(sourceDeps);
         }
     }
     
@@ -141,12 +189,11 @@ public class DependencyResolver {
             throws IllegalArgumentException {
         
         if (dstDirName==null || !(dstDirName.equals("etc") || dstDirName.equals("opt")))
-            throw new IllegalArgumentException("dstDirName="+dstDirName);
+            throw new IllegalArgumentException(Messages.getString("CORE_DEP_DIR_INVALID"));
         
         File f = new File(location);
         if (!f.exists() || (!f.isFile() && !f.isDirectory()))
-            throw new IllegalArgumentException("Not a file or directory. Invalid "
-                    + "file dependency location:"+ f.toPath().toAbsolutePath().toString());
+            throw new IllegalArgumentException(Messages.getString("CORE_DEP_FILE_INVALID", f.toPath().toAbsolutePath().toString()));
         
         globalFileDependencies.add(new Artifact(dstDirName,
                 f.toPath().toAbsolutePath()));    
@@ -160,17 +207,17 @@ public class DependencyResolver {
     public void resolveDependencies()
             throws IOException, URISyntaxException {
         
-        JSONObject graphConfig = topology.builder().getConfig();
-        JSONArray includes = (JSONArray) graphConfig.get("includes");
+        JsonObject graphConfig = topology.builder().getConfig();
+        JsonArray includes = array(graphConfig, "includes");
         if (includes == null)
-            graphConfig.put("includes", includes = new JSONArray());
+            graphConfig.add("includes", includes = new JsonArray());
               
         for (BOperatorInvocation op : operatorToJarDependencies.keySet()) {    
             ArrayList<String> jars = new ArrayList<String>();
             
             for (Path source : operatorToJarDependencies.get(op)) {
-                String jarName = resolveDependency(source, includes);
-                jars.add("impl/lib/" + jarName);
+                String jarName = resolveDependency(source, false, includes);
+                jars.add(DEP_JAR_LOC + File.separator + jarName);
             }
 
             String[] jarPaths = jars.toArray(new String[jars.size()]);
@@ -178,31 +225,20 @@ public class DependencyResolver {
         }
         
         ArrayList<String> jars = new ArrayList<String>();
-        for(Path source : globalDependencies){
-            String jarName = resolveDependency(source, includes);
-            jars.add("impl/lib/" + jarName);	    
+        for(Path source : globalDependencies.keySet()){
+            boolean containsOperator = globalDependencies.get(source);
+            String jarName = resolveDependency(source, containsOperator, includes);
+            String location = depJarRoot(containsOperator);
+            jars.add(location + File.separator  + jarName);	    
         }	
         
         List<BOperator> ops = topology.builder().getOps();
         if(jars.size() != 0){
             for (BOperator op : ops) {
-                if (op instanceof BOperatorInvocation) {
-                    BOperatorInvocation bop = (BOperatorInvocation) op;
-                    if (Functional.class.isAssignableFrom(bop.op()
-                            .getOperatorClass())) {
-                        JSONObject params = (JSONObject) bop.json().get(
-                                "parameters");
-                        JSONObject op_jars = (JSONObject) params.get("jar");
-                        if (null == op_jars) {
-                            JSONObject val = new JSONObject();
-                            val.put("value", new JSONArray());
-                            params.put("jar", val);
-                            op_jars = val;
-                        }
-                        JSONArray value = (JSONArray) op_jars.get("value");
-                        for (String jar : jars) {
-                            value.add(jar);
-                        }
+                if (JavaFunctionalOps.isFunctional(op)) {
+                    JsonArray value = arrayCreate(op._json(), "parameters", "jar", "value");
+                    for (String jar : jars) {
+                        value.add(new JsonPrimitive(jar));
                     }
                 }
             }
@@ -212,7 +248,11 @@ public class DependencyResolver {
             resolveFileDependency(dep, includes);
     }
     
-    private String resolveDependency(Path source, JSONArray includes){ 
+    private static String depJarRoot(boolean containsOperator) {
+        return containsOperator ? DEP_OP_JAR_LOC : DEP_JAR_LOC;
+    }
+    
+    private String resolveDependency(Path source, boolean containsOperator, JsonArray includes){ 
         
         String jarName;
         
@@ -220,26 +260,26 @@ public class DependencyResolver {
             
             File sourceFile = source.toFile();
             
-            JSONObject include = new JSONObject();
+            JsonObject include = new JsonObject();
                  
             // If it's a file, we assume its a jar file.
             if (sourceFile.isFile()) {
                 jarName = source.getFileName().toString();
                 
-                include.put("source", source.toAbsolutePath().toString());
-                include.put("target", "impl/lib");
+                include.addProperty("source", source.toAbsolutePath().toString());
+                include.addProperty("target", depJarRoot(containsOperator));
             } 
             
             else if (sourceFile.isDirectory()) {
                 // Create an entry that will convert the classes dir into a jar file
                 jarName = "classes" + previouslyCopiedDependencies.size() + "_" + sourceFile.getName() + ".jar";
-                include.put("classes", source.toAbsolutePath().toString());
-                include.put("name", jarName);
-                include.put("target", "impl/lib");
+                include.addProperty("classes", source.toAbsolutePath().toString());
+                include.addProperty("name", jarName);
+                include.addProperty("target", DEP_JAR_LOC);
             }
             
             else {
-                throw new IllegalArgumentException("Path not a file or directory:" + source);
+                throw new IllegalArgumentException(Messages.getString("CORE_PATH_INVALID", source));
             }
             includes.add(include);
             previouslyCopiedDependencies.put(source, jarName);
@@ -251,7 +291,7 @@ public class DependencyResolver {
         
         // Sanity check
         if(null == jarName){
-            throw new IllegalStateException("Error resolving dependency "+ source);
+            throw new IllegalStateException(Messages.getString("CORE_ERROR_RESOLVING_DEP", source));
         }
         return jarName;
     }
@@ -259,10 +299,10 @@ public class DependencyResolver {
     /**
      * Copy the Artifact to the toolkit
      */
-    private void resolveFileDependency(Artifact a, JSONArray includes)  {    	
-        JSONObject include = new JSONObject();
-        include.put("source", a.absPath.toString());
-        include.put("target", a.dstDirName);
+    private void resolveFileDependency(Artifact a, JsonArray includes)  {
+        JsonObject include = new JsonObject();
+        include.addProperty("source", a.absPath.toString());
+        include.addProperty("target", a.dstDirName);
         includes.add(include);
    }
 }

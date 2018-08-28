@@ -17,8 +17,13 @@
   <available file="${os.tk.lib}/${tk.jarname}"
              property="tk.lib"
              value="${os.tk.lib}/${tk.jarname}"/>
+  <available file="${os.tk.lib}/${tk.jarname}"
+             property="tk.opt"
+             value="${os.tk.lib}/../opt"/>
   <property name="tk.lib"
      location="${streams.install}/toolkits/${tk.lib.gen}/${tk.jarname}"/>
+  <property name="tk.opt"
+     location="${streams.install}/toolkits/${tk.lib.gen}/../opt"/>
 
   <property name="scala.home" value="${env.SCALA_HOME}"/>
   <property name="scala-library.jar"
@@ -32,6 +37,7 @@
     <pathelement location="${streams.install}/lib/com.ibm.streams.operator.samples.jar" />
     <pathelement location="${streams.install}/lib/com.ibm.streams.operator.jar" />
     <pathelement location="${streams.install}/ext/lib/JSON4J.jar" />
+    <pathelement location="${tk.opt}/gson-2.3.1/gson-2.3.1.jar" />
     <pathelement location="${scala-library.jar}"   /> </path>
 
   <path id="run.scala.classpath">
@@ -59,7 +65,7 @@
   </target>
 
   <target name="compile" depends="init" if="env.SCALA_HOME">
-    <scalac srcdir="${src}" target="jvm-1.7" addparams="-usemanifestcp"
+    <scalac srcdir="${src}" target="jvm-1.8" addparams="-usemanifestcp"
                 destdir="${classes}"
                 classpathref="compile.classpath">
     </scalac>

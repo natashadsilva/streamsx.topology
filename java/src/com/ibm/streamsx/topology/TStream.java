@@ -21,7 +21,6 @@ import com.ibm.streamsx.topology.function.Predicate;
 import com.ibm.streamsx.topology.function.Supplier;
 import com.ibm.streamsx.topology.function.ToIntFunction;
 import com.ibm.streamsx.topology.function.UnaryOperator;
-import com.ibm.streamsx.topology.spl.SPLStream;
 
 /**
  * A {@code TStream} is a declaration of a continuous sequence of tuples. A
@@ -29,7 +28,7 @@ import com.ibm.streamsx.topology.spl.SPLStream;
  * {@link Topology}. <BR>
  * Generic methods on this interface provide the ability to
  * {@link #filter(Predicate) filter}, {@link #transform(Function)
- * transform} or {@link #sink(Consumer) sink} this declared stream using a
+ * transform} or {@link #forEach(Consumer) sink} this declared stream using a
  * function. <BR>
  * Utility methods in the {@code com.ibm.streams.topology.streams} package
  * provide specific source streams, or transformations on streams with specific
@@ -40,6 +39,9 @@ import com.ibm.streamsx.topology.spl.SPLStream;
  * For example, calling a {@code Placeable} method on the stream
  * returned from {@link #filter(Predicate)} will apply to the
  * container that is executing the {@code Predicate} passed into {@code filter()}.
+ * <BR>
+ * When multiple streams are produced by a method (e.g. {@link #split(int, ToIntFunction)}
+ * placement directives are common to all of the produced streams. 
  * </P>
  * 
  * @param <T>
@@ -86,7 +88,16 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
 	     * Tuples will be consistently routed to the same channel based upon 
              * their {@code hashCode()}.
 	     */
-	    HASH_PARTITIONED	    
+	    HASH_PARTITIONED,
+	    
+	    /**
+	     * Tuples are broadcast to all channels.
+	     * For example with a width of four each tuple on the stream results
+	     * in four tuples, one per channel.
+	     * 
+	     * @since 1.9
+	     */
+	    BROADCAST
 	};
 	
     /**
@@ -232,12 +243,61 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * </pre>
      * 
      * </P>
+     * <P>
+     * This function is equivalent to {@link #map(Function)}.
+     * </P>
      * @param transformer
      *            Transformation logic to be executed against each tuple.
      * @return Stream that will contain tuples of type {@code U} transformed from this
      *         stream's tuples.
      */
     <U> TStream<U> transform(Function<T, U> transformer);
+
+    /**
+     * Declare a new stream that maps each tuple from this stream into one
+     * (or zero) tuple of a different type {@code U}. For each tuple {@code t}
+     * on this stream, the returned stream will contain a tuple that is the
+     * result of {@code mapper.apply(t)} when the return is not {@code null}.
+     * If {@code mapper.apply(t)} returns {@code null} then no tuple
+     * is submitted to the returned stream for {@code t}.
+     * 
+     * <P>
+     * Examples of mapping a stream containing numeric values as
+     * {@code String} objects into a stream of {@code Double} values.
+     * 
+     * <pre>
+     * <code>
+     * // Java 8 - Using lambda expression
+     * TStream&lt;String> strings = ...
+     * TStream&lt;Double> doubles = strings.map(v -> Double.valueOf(v));
+     * 
+     * // Java 8 - Using method reference
+     * TStream&lt;String> strings = ...
+     * TStream&lt;Double> doubles = strings.map(Double::valueOf);
+     * 
+     * // Java 7 - Using anonymous class
+     * TStream&lt;String> strings = ...
+     * TStream&lt;Double> doubles = strings.map(new Function<String, Double>() {
+     *             &#64;Override
+     *             public Double apply(String v) {
+     *                 return Double.valueOf(v);
+     *             }});
+     * </code>
+     * </pre>
+     * 
+     * </P>
+     * <P>
+     * This function is equivalent to {@link #transform(Function)}.
+     * The typical term in most apis is {@code map}.
+     * </P>
+     * @param mapper
+     *            Mapping logic to be executed against each tuple.
+     * @return Stream that will contain tuples of type {@code U} mapped from this
+     *         stream's tuples.
+     *
+     * @since 1.7 
+     */
+    <U> TStream<U> map(Function<T, U> mapper);
 
     /**
      * Declare a new stream that modifies each tuple from this stream into one
@@ -267,7 +327,7 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * <P>
      * This method is equivalent to
      * {@code transform(Function<T,T> modifier}).
-     * </P
+     * </P>
      * 
      * @param modifier
      *            Modifier logic to be executed against each tuple.
@@ -277,10 +337,10 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
     TStream<T> modify(UnaryOperator<T> modifier);
 
     /**
-     * Declare a new stream that transforms tuples from this stream into one or
+     * Declare a new stream that maps tuples from this stream into one or
      * more (or zero) tuples of a different type {@code U}. For each tuple
      * {@code t} on this stream, the returned stream will contain all non-null tuples in
-     * the {@code Iterator<U>} that is the result of {@code transformer.apply(t)}.
+     * the {@code Iterator<U>} that is the result of {@code mapper.apply(t)}.
      * Tuples will be added to the returned stream in the order the iterator
      * returns them.
      * 
@@ -311,17 +371,30 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * 
      * </P>
      * 
-     * @param transformer
-     *            Transformation logic to be executed against each tuple.     
-     * @return Stream that will contain tuples of type {@code U} transformed from this
+     * @param mapper
+     *            Mapper logic to be executed against each tuple.     
+     * @return Stream that will contain tuples of type {@code U} mapped from this
+     *         stream's tuples.
+     *         
+     * @since 1.7
+     */
+    <U> TStream<U> flatMap(Function<T, Iterable<U>> mapper);
+    
+    /**
+     * Declare a new stream that maps tuples from this stream into one or
+     * more (or zero) tuples of a different type {@code U}.
+     * <P>
+     * This function is equivalent to {@link #flatMap(Function)}.
+     * </P>
+     * @param transformer Mapper logic to be executed against each tuple.  
+     * @return Stream that will contain tuples of type {@code U} mapped from this
      *         stream's tuples.
      */
     <U> TStream<U> multiTransform(Function<T, Iterable<U>> transformer);
-    
-    
+      
     /**
      * Sink (terminate) this stream. For each tuple {@code t} on this stream
-     * {@link Consumer#accept(Object) sinker.accept(t)} will be called. This is
+     * {@link Consumer#accept(Object) action.accept(t)} will be called. This is
      * typically used to send information to external systems, such as databases
      * or dashboards.
      * <P>
@@ -331,7 +404,7 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * <pre>
      * <code>
      * TStream&lt;String> values = ...
-     * values.sink(new Consumer<String>() {
+     * values.forEach(new Consumer<String>() {
      *             
      *             &#64;Override
      *             public void accept(String tuple) {
@@ -344,8 +417,20 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * 
      * </P>
      * 
-     * @param sinker
-     *            Logic to be executed against each tuple on this stream.
+     * @param action
+     *            Action to be executed against each tuple on this stream.
+     * @return the sink element
+     * 
+     * @since 1.7
+     */
+    TSink forEach(Consumer<T> action);
+        
+    /**
+     * Terminate this stream.
+     * <P>
+     * This function is equivalent to {@link #forEach(Consumer)}.
+     * </P>
+     * @param sinker Action to be executed against each tuple on this stream.
      * @return the sink element
      */
     TSink sink(Consumer<T> sinker);
@@ -599,7 +684,7 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * For Java streams ({@code TStream<T>}) the declared Java type ({@code T}
      * ) of the stream is an exact match.</LI>
      * <LI>
-     * For {@link SPLStream SPL streams} the {@link SPLStream#getSchema() SPL
+     * For {@link com.ibm.streamsx.topology.spl.SPLStream SPL streams} the {@link com.ibm.streamsx.topology.spl.SPLStream#getSchema() SPL
      * schema} is an exact match.</LI>
      * </UL>
      * <BR>
@@ -649,6 +734,29 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
     /**
      * Publish tuples from this stream for consumption by other IBM Streams applications.
      * 
+     * Differs from {@link #publish(String)} in that it
+     * supports {@code topic} as a submission time parameter, for example
+     * using the topic defined by the submission parameter {@code eventTopic}:
+     * 
+     * <pre>
+     * <code>
+     * TStream<String> events = ...
+     * Supplier<String> topicParam = topology.createSubmissionParameter("eventTopic", String.class);
+     * topology.publish(topicParam);
+     * </code>
+     * </pre>
+     * 
+     * @param topic Topic name to publish tuples to.
+     * 
+     * @see #publish(String)
+     * 
+     * @since 1.8
+     */
+    void publish(Supplier<String> topic);
+    
+    /**
+     * Publish tuples from this stream for consumption by other IBM Streams applications.
+     * 
      * Applications consume published streams using:
      * <UL>
      * <LI>
@@ -683,7 +791,7 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * For Java streams ({@code TStream<T>}) the declared Java type ({@code T}
      * ) of the stream is an exact match.</LI>
      * <LI>
-     * For {@link SPLStream SPL streams} the {@link SPLStream#getSchema() SPL
+     * For {@link com.ibm.streamsx.topology.spl.SPLStream SPL streams} the {@link com.ibm.streamsx.topology.spl.SPLStream#getSchema() SPL
      * schema} is an exact match.</LI>
      * </UL>
      * </P>
@@ -753,6 +861,30 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * @see com.ibm.streamsx.topology.spl.SPLStreams#subscribe(TopologyElement, String, com.ibm.streams.operator.StreamSchema)
      */
     void publish(String topic, boolean allowFilter);
+    
+    /**
+     * Publish tuples from this stream for consumption by other IBM Streams applications.
+     * 
+     * Differs from {@link #publish(String, boolean)} in that it
+     * supports {@code topic} as a submission time parameter, for example
+     * using the topic defined by the submission parameter {@code eventTopic}:
+     * 
+     * <pre>
+     * <code>
+     * TStream<String> events = ...
+     * Supplier<String> topicParam = topology.createSubmissionParameter("eventTopic", String.class);
+     * topology.publish(topicParam, false);
+     * </code>
+     * </pre>
+     * 
+     * @param topic Topic name to publish tuples to.
+     * @param allowFilter Allow SPL filters specified by SPL application to be executed.
+     * 
+     * @see #publish(String, boolean)
+     * 
+     * @since 1.8
+     */
+    void publish(Supplier<String> topic, boolean allowFilter);
 
     /**
      * Parallelizes the stream into a a fixed
@@ -789,7 +921,7 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
     /**
      * Parallelizes the stream into {@code width} parallel channels. Tuples are routed 
      * to the parallel channels based on the {@link Routing} parameter.
-     * <BR>
+     * <BR><BR>
      * If {@link Routing#ROUND_ROBIN}
      * is specified the tuples are routed to parallel channels such that an 
      * even distribution is maintained.
@@ -803,72 +935,215 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * routed so that all tuples with the same key are sent to the same channel.
      * This is equivalent to calling {@link #parallel(Supplier, Function)} with
      * an identity function.
-     * <br>
-     * If parallel is invoked when submitting to an embedded context, the flow
-     * will execute as though parallel had not been called.
-     * <br>
+     * <br><br>
+     * Source operations may be parallelized as well, refer to {@link TStream#setParallel(Supplier)} for more information.
+     * <br><br>
      * Given the following code:
-     * 
      * <pre>
      * <code>
-     * TStream&lt;String> myStream = ...;
-     * TStream&lt;String> parallel_start = myStream.parallel(of(3), TStream.Routing.ROUND_ROBIN);
-     * TStream&lt;String> in_parallel = parallel_start.filter(...).transform(...);
-     * TStream&lt;String> joined_parallel_streams = in_parallel.endParallel();
+     * TStream&lt;String> myStream = topology.source(...);
+     * TStream&lt;String> parallelStart = myStream.parallel(of(3), TStream.Routing.ROUND_ROBIN);
+     * TStream&lt;String> inParallel = parallelStart.map(...);
+     * TStream&lt;String> joinedParallelStreams = inParallel.endParallel();
+     * joinedParallelStreams.print();
      * </code>
      * </pre>
      * 
-     * a visual representation a visual representation for parallel() would be
-     * as follows:
+     * The following graph is created:
+     * <br>
+     * <img src="doc-files/Diagram2.jpg" width = 500/>
+     * <br>
+     * <br>
+     * Calling {@code parallel(3)} creates three parallel channels. Each of the 3 channels contains separate 
+     * instantiations of the operations (in this case, just <b>map</b>) declared in the region. Such stream operations are 
+     * run in parallel as follows:
+     * <br>
+     * 
+     * <style>
+            table, th, td {
+                border: 1px solid black;
+                border-collapse: collapse;
+            }
+            th, td {
+                padding: 5px;
+            }
+            th {
+                text-align: left;
+            }
+     * </style>
+     * <table>
+     * <tr><th>Execution Context</th><th>Parallel Behavior</th></tr>
+     * <tr><td>Standalone</td><td>Each parallel channel is separately executed by one or more threads. 
+     * The number of threads executing a channel is exactly 1 thread per input to the channel.</td></tr>
+     * <tr><td>Distributed</td><td>A parallel channel is never run in the same process as another parallel channel.
+     * Furthermore, a single parallel channel may executed across multiple processes, as determined by the Streams runtime.</td></tr>
+     * <tr><td>Streaming Analytics service</td><td>Same as Distributed.</td></tr>
+     * <tr><td>Embedded</td><td>All parallel information is ignored, and the application is executed without any added parallelism.</td></tr>
+     * </table>
+     * 
+     * <br>
+     * 
+     * A parallel region can have multiple inputs and multiple outputs. An input to a parallel 
+     * region is a stream on which {@link TStream#parallel(int)} has been called, and an output
+     * is a stream on which {@link TStream#endParallel()} has been called.
+     * A parallel region with multiple inputs is created if a stream in one parallel region connects with a stream in another
+     * parallel region. 
+     * <br><br>
+     * Two streams "connect" if:
+     * <ul>
+     * <li>One stream invokes {@link TStream#union(TStream)} using the other as a parameter.</li>
+     * <li>Both streams are used as inputs to an SPL operator created through 
+     * {@link com.ibm.streamsx.topology.SPL#invokeOperator(String, com.ibm.streamsx.topology.spl.SPLInput, StreamSchema, java.util.Map) invokeOperator}
+     * which has multiple input ports.</li> 
+     * </ul>
+     * <br>
+     * For example, the following code connects two separate parallel regions into a single parallel region with
+     * multiple inputs:
      * 
      * <pre>
      * <code>
-     *                  |----filter----transform----|
-     *                  |                           |
-     * ---myStream------|----filter----transform----|--joined_parallel_streams
-     *                  |                           |
-     *                  |----filter----transform----|
+     * TStream&lt;String> firstStream = topology.source(...);
+     * TStream&lt;String> secondStream = topology.source(...);
+     * TStream&lt;String> firstParallelStart = firstStream.parallel(of(3), TStream.Routing.ROUND_ROBIN);
+     * TStream&lt;String> secondParallelStart = secondStream.parallel(of(3), TStream.Routing.ROUND_ROBIN);
+     * TStream&lt;String> fistMapOutput = firstParallelStart.map(...);
+     * TStream&lt;String> unionedStreams = firstMapOutput.union(secondParallelStart);
+     * TStream&lt;String> secondMapOutput = unionedStreams.map(...);
+     * TStream&lt;String> nonParallelStream = secondMapOutput.endParallel();
+     * nonParallelStream.print();
      * </code>
      * </pre>
      * 
-     * Each parallel channel can be thought of as being assigned its own thread.
-     * As such, each parallelized stream function (filter and transform, in this
-     * case) are separate instances and operate independently from one another.
+     * This code results in the following graph:
      * <br>
-     * {@code parallel(...)} will only parallelize the stream operations performed <b>after</b>
-     * the call to {@code parallel(...)} and before the call to {@code endParallel()}.
-     * 
-     * In the above example, the {@code parallel(3)} was invoked on {@code myStream}, so
-     * its subsequent functions, {@code filter(...)} and {@code transform(...)}, were parallelized. <br>
-     * <br>
-     * Parallel regions aren't required to have an output stream, and thus may be
-     * used as sinks. The following would be an example of a parallel sink:
+     * <img src="doc-files/Diagram3.jpg" width=500/>
+     * <br><br>
+     * When creating a parallel region with multiple inputs, the different inputs must all have the same value
+     * for the degree of parallelism. For example, it can not be the case that one parallel region input 
+     * specifies a width of 4, while another input to the same region specifies a width of 5. Additionally,
+     * if a submission time parameter is used to specify the width of a parallel region, then different inputs 
+     * to that region must all use the same submission time parameter object.
+     * <br><br>
+     * A parallel region may contain a sink; it is not required that a parallel region have an output stream.
+     * The following defines a sink in a parallel region:
      * <pre>
      * <code>
-     * TStream&lt;String> myStream = ...;
+     * TStream&lt;String> myStream = topology.source(...);
      * TStream&lt;String> myParallelStream = myStream.parallel(6);
      * myParallelStream.print();
      * </code>
      * </pre>
-     * {@code myParallelStream} will be printed to output in parallel. In other
-     * words, a parallel sink is created by calling {@link #parallel(int)} and 
-     * creating a sink operation (such as {@link TStream#sink(Consumer)}). <b>
-     * It is not necessary to invoke {@link #endParallel()} on parallel sinks.</b>
-     * <br><br>
-     * Limitations of parallel() are as follows: <br>
-     * Nested parallelism is not currently supported. A call to {@code parallel(...)}
-     * should never be made immediately after another call to {@code parallel(...)} without
-     * having an {@code endParallel()} in between. <br>
+     * In the above code, the parallel region is implicitly ended by the sink, without calling 
+     * {@link TStream#endParallel()}
+     * 
+     * This results in the following graph:
      * <br>
-     * {@code parallel()} should not be invoked immediately after another call to
-     * {@code parallel()}. The following is invalid:
+     * <img src="doc-files/Diagram1.jpg" width=500>
+     * <br><br>
+     * 
+     * A parallel region with multiple output streams can be created by invoking {@link TStream#endParallel()}
+     * on multiple streams within the same parallel region. For example, the following code defines a parallel
+     * region with multiple output streams:
+     * <pre>
+     * <code>
+     * TStream&lt;String> myStream = topology.source(...);
+     * TStream&lt;String> parallelStart = myStream.parallel(of(3), TStream.Routing.ROUND_ROBIN);
+     * TStream&lt;String> firstInParallel = parallelStart.map(...);
+     * TStream&lt;String> secondInParallel = parallelStart.map(...);
+     * TStream&lt;String> firstParallelOutput = firstInParallel.endParallel();
+     * TStream&lt;String> secondParallelOutput = secondInParallel.endParallel();
+     * </code>
+     * </pre>
+     * The above code would yield the following graph:
+     * <br>
+     * <img src="doc-files/Diagram4.jpg" width=500/>
+     * <br><br>
+     * 
+     * When a stream outside of a parallel region connects to a stream inside of a parallel region,
+     * the outside stream and all of its prior operations implicitly become part of the parallel region.
+     * 
+     * For example, the following code connects a stream outside a parallel 
+     * region to a stream inside of a parallel region.
      * 
      * <pre>
      * <code>
-     * myStream.parallel(2).parallel(2);
+     * TStream&lt;String> firstStream = topology.source(...);
+     * TStream&lt;String> secondStream = topology.source(...);
+     * TStream&lt;String> parallelStream = firstStream.parallel(of(3), TStream.Routing.ROUND_ROBIN);
+     * TStream&lt;String> secondParallelStart = 
+     * TStream&lt;String> firstInParallel = firstParallelStart.map(...);
+     * TStream&lt;String> secondInParallel = secondParallelStart.map(...);
+     * TStream&lt;String> unionStream = firstInParallel.union(secondInParallel);
+     * TStream&lt;String> nonParallelStream = unionStream.endParallel();
+     * nonParallelStream.print();
+     * </code>
      * </pre>
      * 
+     * Once connected, the stream outside of the parallel region (and all of its prior operations)
+     * becomes part of the parallel region:
+     * 
+     * <img src="doc-files/Diagram5.jpg" width=500/>
+     * 
+     * <br><br>
+     * 
+     * The Streams runtime supports the nesting of parallel regions inside of another parallel region.
+     * A parallel region will become nested inside of another parallel region in one of two
+     * cases:
+     * 
+     * <ul>
+     * <li>
+     * If {@link TStream#parallel(int)} is invoked on a stream which is already inside of a parallel region.
+     * </li>
+     * <li>
+     * A stream inside of a parallel region becomes connected to a stream that has a parallel region in its
+     * previous operations.
+     * </li>
+     * </ul>
+     * 
+     * For example, calling {@link TStream#parallel(int)} twice on the same stream creates a nested 
+     * parallel region as follows: 
+     * 
+     * <pre>
+     * <code>
+     * TStream&lt;String> stream = topology.source(...);
+     * stream.parallel(3).map(...).parallel(3).map(...).endParallel().endParallel();
      * </code>
+     * </pre>
+     * 
+     * Results in a graph of the following structure:
+     * <br>
+     * <img src="doc-files/Diagram7.jpg" width=500/>
+     * <br><br>
+     * 
+     * Whereas the first map operation is instantiated exactly 3 times due to {@code parallel(3)},
+     * the second map operation is instantiated a total of 9 times since each of the 3 enclosing 
+     * parallel channels holds 3 nested parallel channels. The {@link TStream#Routing} configurations
+     * of the enclosing and nested parallel regions do not need to match.
+     * <br><br>
+     * As previously mentioned, nesting also occurs when a stream inside of a parallel region becomes 
+     * connected to a stream that has a parallel region in its previous operations. The following
+     * code creates such a situation:
+     * 
+     * <pre>
+     * <code>
+     * TStream&lt;String> streamToJoin = topology.source(...);
+     * streamToJoin.setParallel();
+     * streamToJoin = streamToJoin.map(...).endParallel();
+     * 
+     * TStream&lt;String> parallelStream = topology.source(...);
+     * parallelStream = parallelStream.parallel(4);
+     * 
+     * parallelStream = parallelStream.union(streamToJoin);
+     * parallelStream.map(...).endParallel().print();
+     * </code>
+     * </pre>
+     * 
+     * This results in the following graph structure:
+     * <br>
+     * <img src="doc-files/Diagram6.jpg" width=500>
+     * <br><br>
+     * 
+     * Limitations of parallel() are as follows: <br>
      * 
      * Every call to {@code endParallel()} must have a call to {@code parallel(...)} preceding it. The
      * following is invalid:
@@ -927,6 +1202,17 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
      * @see #parallel(Supplier, Routing)
      */
     TStream<T> parallel(Supplier<Integer> width, Function<T,?> keyer);
+    
+    /**
+     * Sets the current stream as the start of a parallel region.
+     * 
+     * @param width The degree of parallelism.
+     * @see #parallel(int)
+     * @see #parallel(Supplier, Routing)
+     * @see #parallel(Supplier, Function)
+     * @since v1.9
+     */
+    TStream<T> setParallel(Supplier<Integer> width);
     
     /**
      * Ends a parallel region by merging the channels into a single stream.
@@ -1095,17 +1381,26 @@ public interface TStream<T> extends TopologyElement, Placeable<TStream<T>>  {
     TStream<T> autonomous();
     
     /**
-     * Set the source operator for this stream to be the start of a
+     * Set the operator that is the source of this stream to be the start of a
      * consistent region to support at least once and exactly once
      * processing.
      * IBM Streams calculates the boundaries of the consistent region
-     * that is based on the reachability graph of this stream.
+     * based on the reachability graph of this stream. A region
+     * can be bounded though use of {@link #autonomous()}.
      * 
      * <P>
      * Consistent regions are only supported in distributed contexts.
      * </P>
+     * <P>
+     * This must be called on a stream directly produced by an
+     * SPL operator that supports consistent regions.
+     * Source streams produced by methods on {@link Topology}
+     * do not support consistent regions.
+     * </P>
 
-     * @since v1.5
+     * @since 1.5 API added
+     * @since 1.8 Working implementation.
+     * 
      * @return this
      * 
      * @see com.ibm.streamsx.topology.consistent.ConsistentRegionConfig

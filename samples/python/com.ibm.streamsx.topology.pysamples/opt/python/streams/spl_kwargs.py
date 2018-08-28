@@ -1,3 +1,4 @@
+# coding=utf-8
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2016
 
@@ -20,11 +21,11 @@ from streamsx.spl import spl
 
 # Defines the SPL namespace for any functions in this module
 # Multiple modules can map to the same namespace
-def splNamespace():
+def spl_namespace():
     return "com.ibm.streamsx.topology.pysamples.kwargs"
 
 @spl.map()
-class DeltaFilter:
+class DeltaFilter(object):
     "Drops any tuple that is within a delta of the last tuple for the attribute named `value`."
     def __init__(self, delta):
         self.delta = delta
@@ -33,8 +34,8 @@ class DeltaFilter:
 
     # Signature has **kwargs parameter which fixes the
     # SPL tuple parameter passing style to be dictionary
-    def __call__(self, **tuple):
-        value = tuple["value"]
+    def __call__(self, **tuple_):
+        value = tuple_['value']
         if self.last_value is not None:
             if abs(value - self.last_value) <= self.delta:
                 self.last_value = value
@@ -45,15 +46,15 @@ class DeltaFilter:
         return self.empty
 
 @spl.filter()
-class ContainsFilter:
+class ContainsFilter(object):
     """
     Looks for a string term in any attribute in the tuple.
     """
     def __init__(self, term):
         self.term = term;
 
-    def __call__(self, **tuple):
-        for s in tuple.values():
+    def __call__(self, **tuple_):
+        for s in tuple_.values():
             if self.term in str(s):
                 return True
         return False

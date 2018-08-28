@@ -29,15 +29,6 @@
 #include <memory>
 #include <TopologySplpyResource.h>
 
-#include <SPL/Runtime/Common/RuntimeException.h>
-#include <SPL/Runtime/Type/Meta/BaseType.h>
-#include <SPL/Runtime/ProcessingElement/PE.h>
-#include <SPL/Runtime/Operator/Port/OperatorPort.h>
-#include <SPL/Runtime/Operator/Port/OperatorInputPort.h>
-#include <SPL/Runtime/Operator/Port/OperatorOutputPort.h>
-#include <SPL/Runtime/Operator/OperatorContext.h>
-#include <SPL/Runtime/Operator/Operator.h>
-
 /**
  * Functionality for executing Python within IBM Streams.
  */
@@ -62,7 +53,7 @@ namespace streamsx {
       PyObject * pyReturnVar = pySplProcessTuple(function, splVal);
 
       if(pyReturnVar == 0){
-        throw SplpyGeneral::pythonException("sink");
+        throw SplpyExceptionInfo::pythonError("for_each");
       }
 
       Py_DECREF(pyReturnVar);
@@ -82,7 +73,7 @@ namespace streamsx {
       PyObject * pyReturnVar = pySplProcessTuple(function, splVal);
 
       if(pyReturnVar == 0){
-        throw SplpyGeneral::pythonException("filter");
+         throw SplpyExceptionInfo::pythonError("map");
       }
 
       int ret = PyObject_IsTrue(pyReturnVar);
@@ -101,13 +92,53 @@ namespace streamsx {
       SplpyGIL lock;
 
       // invoke python nested function that calls the application function
+      PyObject * pyReturnVar = pyTupleMap(function, splVal);
+
+      if (pyReturnVar == NULL)
+          return 0;
+
+      pySplValueFromPyObject(retSplVal, pyReturnVar);
+      Py_DECREF(pyReturnVar);
+
+      return 1;
+    }
+
+    template <class T>
+    static PyObject * pyTupleMap(PyObject * function, T & splVal) {
+
+      // invoke python nested function that calls the application function
       PyObject * pyReturnVar = pySplProcessTuple(function, splVal);
 
       if (SplpyGeneral::isNone(pyReturnVar)) {
         Py_DECREF(pyReturnVar);
-        return 0;
+        return NULL;
       } else if(pyReturnVar == 0){
-         throw SplpyGeneral::pythonException("transform");
+         throw SplpyExceptionInfo::pythonError("map");
+      } 
+
+      return pyReturnVar;
+    }
+
+    /**
+     * Implementation for Map operator when the output port
+     * can pass by reference.
+     * occ = 0,-1 do not pass by ref
+     * occ >= 1 - pass by ref - occ is the reference count bumps
+     * we must leave the object with.
+     */
+    template <class T>
+    static int pyTupleMapByRef(PyObject * function, T & splVal, SPL::blob & retSplVal, int32_t occ) {
+      SplpyGIL lock;
+
+      // invoke python nested function that calls the application function
+      PyObject * pyReturnVar = pyTupleMap(function, splVal);
+
+      if (pyReturnVar == NULL)
+        return 0;
+
+      if (occ > 0) {
+          pyTupleByRef(retSplVal, pyReturnVar, occ);
+          return 1;
       } 
 
       pySplValueFromPyObject(retSplVal, pyReturnVar);
@@ -116,6 +147,7 @@ namespace streamsx {
       return 1;
     }
 
+
     // Python hash of an SPL value
     // Python hashes are signed integer values
     template <class T>
@@ -123,16 +155,15 @@ namespace streamsx {
 
       SplpyGIL lock;
 
-      PyObject * arg = pySplValueToPyObject(splVal);
+      PyObject * pyReturnVar = pySplProcessTuple(function, splVal);
 
-      // invoke python function that generates the hash
-      PyObject * pyReturnVar = pyTupleFunc(function, arg); 
       if (pyReturnVar == 0){
-        throw SplpyGeneral::pythonException("hash");
+        throw SplpyExceptionInfo::pythonError("hash");
       }
 
       // construct integer from return value
-      SPL::int64 hash = (SPL::int64) PyLong_AsLong(pyReturnVar);
+      SPL::int64 hash;
+      pySplValueFromPyObject(hash, pyReturnVar);
       Py_DECREF(pyReturnVar);
       return hash;
    }

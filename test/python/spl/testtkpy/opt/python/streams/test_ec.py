@@ -1,3 +1,4 @@
+# coding=utf-8
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2017
 
@@ -10,11 +11,11 @@ import pickle
 # Test Execution Context (streamsx.ex) functions
 #------------------------------------------------------------------
 
-def splNamespace():
+def spl_namespace():
     return "com.ibm.streamsx.topology.pytest.pyec"
 
 @spl.filter()
-class PyTestOperatorContext:
+class PyTestOperatorContext(object):
     def __init__(self, domain_id, instance_id, job_id, pe_id, channel, local_channel, max_channels, local_max_channels):
         self.enter_called = False
         self.exit_called = False
@@ -31,7 +32,7 @@ class PyTestOperatorContext:
 
     def same(self, expect, got):
         if expect != got:
-            print("Expected", expect, "Got", got, flush=True)
+            print("Expected", expect, "Got", got)
             return False
         return True
 
@@ -60,7 +61,7 @@ class PyTestOperatorContext:
         self.exit_called = True
 
 @spl.filter()
-class PyTestMetrics:
+class PyTestMetrics(object):
     def __init__(self):
         ok = True
         self.c = ec.CustomMetric(self, "C1")
@@ -77,6 +78,13 @@ class PyTestMetrics:
         g2 = ec.CustomMetric(self, "G2", kind='Gauge', initialValue=-214)
         ok = ok and self.check_metric(g2, "G2", None, ec.MetricKind.Gauge, -214)
 
+        g2.value = 89
+        ok = ok and self.check_metric(g2, "G2", None, ec.MetricKind.Gauge, 89)
+
+        g2X = ec.CustomMetric(self, "G2", kind='Gauge', initialValue=-214)
+        ok = ok and self.check_metric(g2, "G2", None, ec.MetricKind.Gauge, 89)
+        ok = ok and self.check_metric(g2X, "G2", None, ec.MetricKind.Gauge, 89)
+        
         if not ok:
             raise AssertionError("Failed metrics!")
 
@@ -97,6 +105,9 @@ class PyTestMetrics:
 
         self.c.value += 13
         ok = ok and self.check_metric(self.c, "C1", None, ec.MetricKind.Counter, cv + 7 + 13)
+
+        self.c.value -= 8
+        ok = ok and self.check_metric(self.c, "C1", None, ec.MetricKind.Counter, cv + 7 + 13 - 8)
         return ok
 
 

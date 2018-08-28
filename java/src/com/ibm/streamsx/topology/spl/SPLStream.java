@@ -11,6 +11,7 @@ import com.ibm.streams.operator.StreamSchema;
 import com.ibm.streams.operator.Tuple;
 import com.ibm.streamsx.topology.TStream;
 import com.ibm.streamsx.topology.consistent.ConsistentRegionConfig;
+import com.ibm.streamsx.topology.context.Placeable;
 import com.ibm.streamsx.topology.function.Function;
 import com.ibm.streamsx.topology.function.Predicate;
 import com.ibm.streamsx.topology.function.Supplier;
@@ -155,6 +156,12 @@ public interface SPLStream extends TStream<Tuple>, SPLInput {
      * {@inheritDoc}
      */
     @Override
+    SPLStream setParallel(Supplier<Integer> width);
+    
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     SPLStream endParallel();
     
     /**
@@ -168,4 +175,16 @@ public interface SPLStream extends TStream<Tuple>, SPLInput {
      */
     @Override
     SPLStream setConsistent(ConsistentRegionConfig config);
+    
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    SPLStream colocate(Placeable<?>... elements);
+    
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    SPLStream invocationName(String name);
 }

@@ -7,16 +7,34 @@
 
   <property name="src" location="src"/>
   <property name="classes" location="classes"/>
+  <property name="runtime.src" location="runtime/src"/>
+  <property name="runtime.classes" location="runtime/classes"/>
+  <property name="execute.src" location="execute/src"/>
+  <property name="execute.classes" location="execute/classes"/>
   <property name="jarname" value="com.ibm.streamsx.topology.jar"/>
   <property name="jar" location="${tk.lib}/${jarname}"/>
 
   <path id="compile.classpath">
     <path refid="streams.classpath"/>
     <path refid="tk.classpath"/>
+    <path location="${runtime.classes}" />
     <pathelement location="${junit.jar}"/>
   </path>
 
+  <path id="compile.execute.tk.classpath">
+    <path location="${runtime.classes}" />
+  </path>
+
+  <path id="compile.runtime.classpath">
+  </path>
+
+  <path id="compile.execute.classpath">
+    <path refid="streams.classpath"/>
+    <path refid="compile.execute.tk.classpath"/>
+  </path>
+
   <path id="compile.pure.classpath">
+    <path location="${runtime.classes}" />
     <path refid="gson.classpath" />
     <path refid="httpclient.classpath"/>
     <path refid="compress.classpath"/>
@@ -27,43 +45,77 @@
 
   <target name="init">
     <mkdir dir="${classes}"/>
+    <mkdir dir="${runtime.classes}"/>
+    <mkdir dir="${execute.classes}"/>
     <mkdir dir="${tk.lib}"/>
   </target>
 
   <!-- Compile of classes that do not depend on STREAMS_INSTALL
        to allow local generation of SPL code and submission to
        a build farm.
+              ${cisxt}/spi/*.java
+              ${cisxt}/spi/builder/*.java
    -->
   <property name="cisxt" value="com/ibm/streamsx/topology"/>
-  <target name="compile.pure" depends="init">
+  <property name="cisxr" value="com/ibm/streamsx/rest"/>
+  <property name="pure.source"
+       value="
+              ${cisxt}/internal/gson/*.java
+              ${cisxt}/generator/**
+              ${cisxt}/context/remote/*.java
+              ${cisxt}/internal/context/remote/*.java
+              ${cisxt}/internal/streaminganalytics/*.java
+
+              ${cisxt}/jobconfig/*.java
+              ${cisxt}/builder/*.java
+              ${cisxt}/internal/streams/*.java
+
+              ${cisxr}/*.java
+              "
+  />
+  <target name="compile.pure" depends="init,compile.runtime">
     <javac debug="true" includeantruntime="no"
        srcdir="${src}" 
        destdir="${classes}"
        classpathref="compile.pure.classpath"
-       includes="${cisxt}/function/*.java
-                 ${cisxt}/internal/gson/*.java
-                 ${cisxt}/generator/**
-                 ${cisxt}/context/remote/*.java
-                 ${cisxt}/internal/context/remote/*.java
-                 ${cisxt}/internal/streaminganalytics/*.java
-                 "
+       includes="${pure.source}"
     />
-    <copy toDir="${classes}">
+    <copy toDir="${classes}" verbose="true">
       <fileset dir="${src}" includes="**/*.properties"/>
     </copy>
   </target>
 
-  <target name="compile" depends="init,compile.pure">
+  <target name="compile" depends="compile.pure,compile.execute">
     <javac debug="true" includeantruntime="no"
        srcdir="${src}" 
        destdir="${classes}"
-       classpathref="compile.classpath"/>
+       classpathref="compile.classpath"
+       excludes="${pure.source}"
+       />
+  </target>
+
+  <target name="compile.runtime" depends="init">
+    <javac debug="true" includeantruntime="no"
+       srcdir="${runtime.src}" 
+       destdir="${runtime.classes}"
+       classpathref="compile.runtime.classpath"
+       />
+    <copy toDir="${runtime.classes}" verbose="true">
+      <fileset dir="${runtime.src}" includes="**/*.properties"/>
+    </copy>
     <ant dir="../scala" target="all" useNativeBasedir="true" inheritAll="no"/>
   </target>
 
-  <target name="jar" depends="compile,_jar"/>
 
-  <target name="_jar">
+  <target name="compile.execute" depends="compile.runtime">
+    <javac debug="true" includeantruntime="no"
+       srcdir="${execute.src}" 
+       destdir="${execute.classes}"
+       classpathref="compile.execute.classpath"
+       />
+  </target>
+
+  <target name="jar" depends="compile">
   <manifestclasspath property="jar.classpath" jarfile="${jar}">
      <classpath>
        <path refid="tk.classpath"/>
@@ -72,18 +124,21 @@
        </fileset>
      </classpath>
   </manifestclasspath>
-    <jar destfile="${jar}">
+    <jar destfile="${jar}" filesonly="true">
        <manifest>
           <attribute name="Class-Path" value="${jar.classpath}"/>
        </manifest>
+    <fileset dir="${runtime.classes}"/>
     <fileset dir="${classes}"/>
-    <fileset dir="${src}" excludes="com/ibm/streamsx/topology/internal/**"/>
-    <fileset dir="${src}" includes="com/ibm/streamsx/topology/internal/messages/*.properties"/>
+    <fileset dir="${execute.classes}"/>
+    <fileset dir="${src}" excludes="com/ibm/streamsx/topology/internal/** **/*.properties"/>
     </jar>
   </target>
 
   <target name="clean" >
     <delete dir="${classes}"/>
+    <delete dir="${runtime.classes}"/>
+    <delete dir="${execute.classes}"/>
     <delete dir="${tk.lib}"/>
   </target>
 </project>

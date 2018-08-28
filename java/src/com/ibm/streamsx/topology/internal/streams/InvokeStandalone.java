@@ -20,7 +20,6 @@ import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 
 import com.google.gson.JsonObject;
-import com.ibm.streams.operator.logging.TraceLevel;
 import com.ibm.streamsx.topology.jobconfig.JobConfig;
 import com.ibm.streamsx.topology.jobconfig.SubmissionParameter;
 
@@ -45,36 +44,29 @@ public class InvokeStandalone {
             throws Exception, InterruptedException {
         String si = System.getProperty("java.home");
         File jvm = new File(si, "bin/java");
-        
+
         JobConfig jc = JobConfigOverlay.fromFullOverlay(deploy);
 
         List<String> commands = new ArrayList<>();
         commands.add(jvm.getAbsolutePath());
         commands.add("-jar");
         commands.add(bundle.getAbsolutePath());
-        Level traceLevel = jc.getTracing();
+        String traceLevel = jc.getStreamsTracing();
         if (traceLevel != null) {
             commands.add("-t");
 
             // -t, --trace-level=INT Trace level: 0 - OFF, 1 - ERROR, 2 - WARN,
             // 3 - INFO, 4 - DEBUG, 5 - TRACE.
-            
-            int tli = traceLevel.intValue();
-            String tls;
-            if (tli == Level.OFF.intValue())
-                tls = "0";
-            else if (tli == Level.ALL.intValue())
-                tls = "5";
-            else if (tli >= TraceLevel.ERROR.intValue())
-                tls = "1";
-            else if (tli >= TraceLevel.WARN.intValue())
-                tls = "2";
-            else if (tli >= TraceLevel.INFO.intValue())
-                tls = "3";
-            else if (tli >= TraceLevel.DEBUG.intValue())
-                tls = "4";
-            else
-                tls = "5";
+            final String tls;
+            switch (traceLevel) {
+                case "off": tls = "0"; break;
+                default:
+                case "error": tls = "1"; break;
+                case "warn":  tls = "2"; break;
+                case "info":  tls = "3"; break;
+                case "debug": tls = "4"; break;
+                case "trace": tls = "5"; break;
+            }
             commands.add(tls);
         }
         if (jc.hasSubmissionParameters()) {
@@ -87,6 +79,17 @@ public class InvokeStandalone {
             }
         }
 
+	String datadir = jc.getDataDirectory();
+	if (datadir != null) {
+	    commands.add("--data-directory");
+	    commands.add(datadir);
+	}
+
+        if (deploy.has("topology.standaloneRunTime")) {
+             double rt = deploy.get("topology.standaloneRunTime").getAsDouble();
+             commands.add("--kill-after=" + rt);
+        }
+        
         trace.info("Invoking standalone application");
         trace.info(Util.concatenate(commands));
 
@@ -166,6 +169,8 @@ public class InvokeStandalone {
             } finally {
                 deleteBundle();
             }
+            
+            isDone = true;
             trace.info("Standalone application completed: return code=" + rc);
             notifyAll();
             return rc;

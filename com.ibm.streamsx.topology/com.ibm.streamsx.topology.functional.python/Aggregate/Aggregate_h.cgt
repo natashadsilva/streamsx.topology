@@ -1,0 +1,71 @@
+/* Additional includes go here */
+#include "splpy_funcop.h"
+#include <SPL/Runtime/Window/Window.h>
+
+using namespace streamsx::topology;
+
+<%SPL::CodeGen::headerPrologue($model);%>
+
+<%
+# Configure Windowing
+ my $inputPort = $model->getInputPortAt(0); 
+ my $window = $inputPort->getWindow();
+ my $windowCppType = SPL::CodeGen::getWindowCppType($window,"PyObject *");
+%>
+
+@include "../pyspltuple.cgt"
+
+class MY_OPERATOR : public MY_BASE_OPERATOR,
+      public WindowEvent<PyObject *>
+{
+public:
+  // Constructor
+  MY_OPERATOR();
+
+  // Destructor
+  virtual ~MY_OPERATOR(); 
+
+  // Notify termination
+  void prepareToShutdown(); 
+
+  // Tuple processing for non-mutating ports
+  void process(Tuple const & tuple, uint32_t port);
+  void process(Punctuation const & punct, uint32_t port);
+
+  // Window
+  void onWindowTriggerEvent(
+     Window<PyObject *> & window, Window<PyObject *>::PartitionType const& key);
+
+  void beforeWindowFlushEvent(
+     Window<PyObject *> & window, Window<PyObject *>::PartitionType const& key) {
+
+     onWindowTriggerEvent(window, key);
+  }
+  
+void afterTupleEvictionEvent(
+     Window<PyObject *> & window,  Window<PyObject *>::TupleType & tuple,
+     Window<PyObject *>::PartitionType const & partition);
+
+private:
+    SplpyOp * op() { return funcop_; }
+
+    // Members
+    // Control for interaction with Python
+    SplpyFuncOp *funcop_;
+    PyObject *spl_in_object_out;
+    
+    PyObject *pyInStyleObj_;
+
+    PyObject *loads;
+
+    // Number of output connections when passing by ref
+    // -1 when cannot pass by ref
+    int32_t occ_;
+
+    // Window definition
+    <%=$windowCppType%>  window_;	       
+
+}; 
+
+<%SPL::CodeGen::headerEpilogue($model);%>
+

@@ -21,9 +21,8 @@ import org.junit.Test;
 
 import com.ibm.streamsx.topology.TStream;
 import com.ibm.streamsx.topology.Topology;
-import com.ibm.streamsx.topology.context.StreamsContext.Type;
-import com.ibm.streamsx.topology.internal.spljava.Schemas;
 import com.ibm.streamsx.topology.spl.SPL;
+import com.ibm.streamsx.topology.spl.SPLSchemas;
 import com.ibm.streamsx.topology.spl.SPLStream;
 import com.ibm.streamsx.topology.streams.StringStreams;
 import com.ibm.streamsx.topology.test.TestTopology;
@@ -43,7 +42,7 @@ public class PublishSubscribeUDPTest extends TestTopology {
 
     @Before
     public void checkIsDistributed() {
-        assumeTrue(getTesterType() == Type.DISTRIBUTED_TESTER);
+        assumeTrue(isDistributedOrService());
     }
     
     @Test
@@ -123,7 +122,7 @@ public class PublishSubscribeUDPTest extends TestTopology {
         params.put("width", swidth);
         params.put("topic", topic);
         
-        SPLStream subscribe = SPL.invokeSource(t, "testspl::UDPStringSub", params, Schemas.STRING);
+        SPLStream subscribe = SPL.invokeSource(t, "testspl::UDPStringSub", params, SPLSchemas.STRING);
         
         completeAndValidateUnordered(subscribe.toStringStream(), 30, data);
     }

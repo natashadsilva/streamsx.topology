@@ -6,6 +6,7 @@ package com.ibm.streamsx.topology.test.json;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assume.assumeTrue;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -14,6 +15,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import com.ibm.json.java.JSON;
@@ -34,6 +37,11 @@ import com.ibm.streamsx.topology.tester.Condition;
 import com.ibm.streamsx.topology.tuple.JSONAble;
 
 public class JSONStreamsTest extends TestTopology {
+    @BeforeClass
+    public static void checkHasStreamsInstall() {
+        // Requires IBM JSON4J
+        assumeTrue(hasStreamsInstall());
+    }
     
     private static final String QUESTION =
             "What is the answer to life, the universe & everything?";
@@ -46,6 +54,12 @@ public class JSONStreamsTest extends TestTopology {
             + "      {\"value\": \"Close\", \"onclick\": \"CloseDoc()\"}\n"
             + "    ]\n" + "  }\n" + "}}";
 
+    @Before
+    public void checkLocalFiles() {
+        // Uses a StreamHandler to test - not yet supported.
+        assumeTrue(!isStreamingAnalyticsRun());
+    }
+    
     /**
      * Convert an example JSON as a String back to a String through JSON
      * deserialization and serialization.
@@ -94,7 +108,7 @@ public class JSONStreamsTest extends TestTopology {
 
     @Test
     public void testModifyingJson() throws Exception {
-        final Topology t = new Topology("SimpleJson");
+        final Topology t = new Topology();
 
         final JSONObject value = new JSONObject();
         value.put("question",QUESTION);

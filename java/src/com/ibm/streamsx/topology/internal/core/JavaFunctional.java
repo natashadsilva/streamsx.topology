@@ -4,30 +4,30 @@
  */
 package com.ibm.streamsx.topology.internal.core;
 
-import static com.ibm.streamsx.topology.internal.functional.ops.FunctionFunctor.FUNCTIONAL_LOGIC_PARAM;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_JAVA;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_FUNCTIONAL;
 
 import java.io.Serializable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
-import com.ibm.streams.operator.Operator;
-import com.ibm.streams.operator.StreamSchema;
-import com.ibm.streams.operator.Tuple;
 import com.ibm.streamsx.topology.TStream;
 import com.ibm.streamsx.topology.TopologyElement;
 import com.ibm.streamsx.topology.builder.BInputPort;
 import com.ibm.streamsx.topology.builder.BOperatorInvocation;
 import com.ibm.streamsx.topology.builder.BOutput;
 import com.ibm.streamsx.topology.builder.BOutputPort;
-import com.ibm.streamsx.topology.internal.functional.ObjectUtils;
-import com.ibm.streamsx.topology.internal.spljava.Schemas;
+import com.ibm.streamsx.topology.internal.functional.FunctionalOpProperties;
+import com.ibm.streamsx.topology.internal.functional.ObjectSchemas;
+import com.ibm.streamsx.topology.internal.logic.ObjectUtils;
+import com.ibm.streamsx.topology.spi.runtime.TupleSerializer;
 
 /**
  * Maintains the core core for building a topology of Java streams.
@@ -39,34 +39,36 @@ public class JavaFunctional {
      * Add an operator that executes a Java function (as an instance of a class)
      * for its logic.
      */
+    /*
     public static BOperatorInvocation addFunctionalOperator(TopologyElement te,
-            Class<? extends Operator> opClass, Serializable logic) {
+            String kind, Serializable logic) {
 
         verifySerializable(logic);
         String logicString = ObjectUtils.serializeLogic(logic);
-        BOperatorInvocation bop = te.builder().addOperator(opClass,
+        BOperatorInvocation bop = te.builder().addOperator("FRED", kind,
                 Collections.singletonMap(FUNCTIONAL_LOGIC_PARAM, logicString));
 
         addDependency(te, bop, logic);
 
         return bop;
     }
+    */
     public static BOperatorInvocation addFunctionalOperator(TopologyElement te,
-            String name, Class<? extends Operator> opClass, Serializable logic) {
+            String name, String kind, Serializable logic) {
 
-        return addFunctionalOperator(te, name, opClass, logic, null);
+        return addFunctionalOperator(te, name, kind, logic, null);
     }
     public static BOperatorInvocation addFunctionalOperator(TopologyElement te,
-            String name, Class<? extends Operator> opClass, Serializable logic,
+            String name, String kind, Serializable logic,
             Map<String,Object> params) {
         if (params == null)
             params = new HashMap<>();
 
         verifySerializable(logic);
         String logicString = ObjectUtils.serializeLogic(logic);        
-        params.put(FUNCTIONAL_LOGIC_PARAM, logicString);
-        BOperatorInvocation bop = te.builder().addOperator(name, opClass,
-                params);
+        params.put(FunctionalOpProperties.FUNCTIONAL_LOGIC_PARAM, logicString);
+        BOperatorInvocation bop = te.builder().addOperator(name, kind, params);
+        bop.setModel(MODEL_FUNCTIONAL, LANGUAGE_JAVA);
 
         addDependency(te, bop, logic);
 
@@ -75,7 +77,6 @@ public class JavaFunctional {
     
     private static final Set<Class<?>> VIEWABLE_TYPES = new HashSet<>();
     static {
-        VIEWABLE_TYPES.add(Tuple.class);
         VIEWABLE_TYPES.add(String.class);
     }
     
@@ -85,12 +86,18 @@ public class JavaFunctional {
      * type.
      */
     public static <T> TStream<T> addJavaOutput(TopologyElement te,
-            BOperatorInvocation bop, Type tupleType) {
+            BOperatorInvocation bop, Type tupleType, boolean singlePort) {
+        return addJavaOutput(te, bop, tupleType, Optional.empty(), singlePort);
+    }
+    public static <T> TStream<T> addJavaOutput(TopologyElement te,
+            BOperatorInvocation bop, Type tupleType, 
+            Optional<TupleSerializer> serializer, boolean singlePort)  {
         
-        StreamSchema mappingSchema = Schemas.getSPLMappingSchema(tupleType);
-        BOutputPort bstream = bop.addOutput(mappingSchema);
+        String mappingSchema = ObjectSchemas.getMappingSchema(tupleType);
+        BOutputPort bstream = bop.addOutput(mappingSchema,
+                singlePort ? Optional.of(bop.name()) : Optional.empty());
         
-        return getJavaTStream(te, bop, bstream, tupleType);
+        return getJavaTStream(te, bop, bstream, tupleType, serializer);
     }
     
     /**
@@ -98,18 +105,20 @@ public class JavaFunctional {
      * Multiple streams can be added to an output port.
      */
     public static <T> TStream<T> getJavaTStream(TopologyElement te,
-            BOperatorInvocation bop, BOutputPort bstream, Type tupleType) {
+            BOperatorInvocation bop, BOutputPort bstream, Type tupleType,
+            Optional<TupleSerializer> serializer) {
         if (tupleType != null)
-            bstream.json().put("type.native", tupleType.toString()); // Java 8 should use getTypeName
+            bstream.setNativeType(tupleType);
         addDependency(te, bop, tupleType);
+        if (serializer.isPresent())
+            addDependency(te, bop, serializer.get());
         
         // If the stream is just a Java object as a blob
         // then don't allow them to be viewed.
         if (!VIEWABLE_TYPES.contains(tupleType)) {
             bop.addConfig("streamViewability", false);
         }
-        return new StreamImpl<T>(te, bstream, tupleType);
-
+        return new StreamImpl<T>(te, bstream, tupleType, serializer);
     }
 
     /**
@@ -146,10 +155,13 @@ public class JavaFunctional {
      */
     public static void addDependency(TopologyElement te,
             BOperatorInvocation bop, Type tupleType) {
-        if (Tuple.class.equals(tupleType))
-            return;
-        if (tupleType instanceof Class)
-            te.topology().getDependencyResolver().addJarDependency(bop, (Class<?>) tupleType);
+
+        if (tupleType instanceof Class) {
+            Class<?> tupleClass = (Class<?>) tupleType;
+            if ("com.ibm.streams.operator.Tuple".equals(tupleClass.getName()))
+                return;
+            te.topology().getDependencyResolver().addJarDependency(bop, tupleClass);
+        }
         if (tupleType instanceof ParameterizedType) {
             
             ParameterizedType pt = (ParameterizedType) tupleType;
@@ -165,6 +177,15 @@ public class JavaFunctional {
     private static void addDependency(TopologyElement te,
             BOperatorInvocation bop, Object function) {
         te.topology().getDependencyResolver().addJarDependency(bop, function);
+    }
+    
+    /**
+     * Copy dependencies from one operator to another.
+     */
+    public static void copyDependencies(TopologyElement te,
+            BOperatorInvocation source,
+            BOperatorInvocation op) {
+        te.topology().getDependencyResolver().copyDependencies(source, op);
     }
     
     /**

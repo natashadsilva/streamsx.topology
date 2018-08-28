@@ -1,11 +1,11 @@
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2017
+from __future__ import print_function
 import unittest
 import sys
 import itertools
 import time
-
-import test_vers
+import os
 
 from streamsx.topology.topology import *
 from streamsx.topology.tester import Tester
@@ -14,8 +14,9 @@ import streamsx.topology.context
 import streamsx.spl.op as op
 
 
-@unittest.skipIf(not test_vers.tester_supported() , "tester not supported")
 class TestPending(unittest.TestCase):
+    _multiprocess_can_split_ = True
+
     """ Test pending connections.
     """
     def setUp(self):
@@ -117,3 +118,28 @@ class TestPending(unittest.TestCase):
         tester = Tester(topo)
         tester.contents(result, expected)
         tester.test(self.test_ctxtype, self.test_config)
+
+class TestPendingCloud(TestPending):
+    def setUp(self):
+        Tester.setup_streaming_analytics(self, force_remote_build=True)
+
+class TestPendingCompileOnly(unittest.TestCase):
+
+    @unittest.skipIf("STREAMS_INSTALL" not in os.environ, "STREAMS_INSTALL not set")
+    def test_pure_loop(self):
+        topo = Topology()
+
+        feedback = PendingStream(topo)
+        
+        df = op.Map('spl.utility::Custom',
+            feedback.stream,
+            schema=schema.CommonSchema.String)
+
+        delayed_out = op.Map('spl.utility::Delay', df.stream, params={'delay': 0.05}).stream
+
+        feedback.complete(delayed_out)
+
+        sr = streamsx.topology.context.submit('BUNDLE', topo)
+        self.assertEqual(0, sr['return_code'])
+        os.remove(sr.bundlePath)
+

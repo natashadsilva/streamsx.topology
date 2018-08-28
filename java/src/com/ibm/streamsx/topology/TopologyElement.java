@@ -4,7 +4,6 @@
  */
 package com.ibm.streamsx.topology;
 
-import com.ibm.streams.flow.declare.OperatorGraph;
 import com.ibm.streamsx.topology.builder.GraphBuilder;
 
 /**
@@ -27,13 +26,6 @@ public interface TopologyElement {
      * @return The topology for this element.
      */
     Topology topology();
-
-    /**
-     * Get the underlying {@code OperatorGraph}. Internal use only.
-     * <BR>
-     * Not intended to be called by applications, may be removed at any time.
-     */
-    OperatorGraph graph();
 
     /**
      * Get the underlying {@code OperatorGraph}. Internal use only.

@@ -6,111 +6,77 @@ package com.ibm.streamsx.topology.builder;
 
 import java.util.concurrent.TimeUnit;
 
-import com.ibm.json.java.JSONArray;
-import com.ibm.json.java.JSONObject;
-import com.ibm.streams.flow.declare.InputPortDeclaration;
-import com.ibm.streams.flow.declare.StreamConnection;
-import com.ibm.streams.operator.window.StreamWindow;
+import com.google.gson.JsonObject;
 
+/**
+ * Input ports don't have a name in SPL but the code generation
+ * keys ports by their name so we create a unique internal identifier
+ * for the name.
+ */
 public class BInputPort extends BInput {
+    
+    public interface Window {
+        String SLIDING = "SLIDING";
+        
+        String NONE_POLICY = "NONE";
+        String TIME_POLICY = "TIME";
+        String COUNT_POLICY = "COUNT";
+    }
 
     private final BOperator op;
-    private final InputPortDeclaration port;
 
-    BInputPort(BOperator op, InputPortDeclaration port) {
+    BInputPort(BOperatorInvocation op, int index, String schema) {
         super(op.builder());
         this.op = op;
-        this.port = port;
+        
+        addPortInfo(index, op.builder().uniqueId("$__spl_ip"), schema);
     }
 
     public BOperator operator() {
         return op;
     }
 
-    /**
-     * Add this port information and its connections to output ports, by name.
-     */
-    @Override
-    public JSONObject complete() {
-
-        final JSONObject json = json();
-
-        BUtils.addPortInfo(json, port);
-
-        JSONArray conns = new JSONArray();
-        for (StreamConnection c : port().getConnections()) {
-            conns.add(c.getOutput().getName());
-        }
-        json.put("connections", conns);
-
-        return json;
-    }
-
-    public InputPortDeclaration port() {
-        return port;
-    }
-
-    public BInputPort window(StreamWindow.Type type,
-            StreamWindow.Policy evictPolicy, Object evictConfig, TimeUnit evictTimeUnit,
-            StreamWindow.Policy triggerPolicy, Object triggerConfig, TimeUnit triggerTimeUnit,
+    public BInputPort window(String type,
+            String evictPolicy, Object evictConfig, TimeUnit evictTimeUnit,
+            String triggerPolicy, Object triggerConfig, TimeUnit triggerTimeUnit,
             boolean partitioned) {
 
-        switch (type) {
-        case NOT_WINDOWED:
-            return this;
-        case SLIDING:
-            port().sliding();
-            break;
-        case TUMBLING:
-            port().tumbling();
-            break;
-        }
-
-        final JSONObject winJson = new JSONObject();
-        winJson.put("type", type.name());
+        final JsonObject winJson = new JsonObject();
+        winJson.addProperty("type", type);
 
         // Eviction
         switch (evictPolicy) {
-        case COUNT:
-            port().evictCount(((Number) evictConfig).intValue());
-            break;
-        case TIME:
-            port().evictTime((Long) evictConfig, evictTimeUnit);
+        case Window.COUNT_POLICY:
+        case Window.TIME_POLICY:
             break;
         default:
-            ;
-            throw new UnsupportedOperationException(evictPolicy.name());
+            throw new UnsupportedOperationException(evictPolicy);
         }
-        winJson.put("evictPolicy", evictPolicy.name());
-        winJson.put("evictConfig", evictConfig);
-        if (evictPolicy == StreamWindow.Policy.TIME)
-            winJson.put("evictTimeUnit", evictTimeUnit.name());
+        winJson.addProperty("evictPolicy", evictPolicy);
+        winJson.addProperty("evictConfig", (Number) evictConfig);
+        if (evictPolicy.equals(Window.TIME_POLICY))
+            winJson.addProperty("evictTimeUnit", evictTimeUnit.name());
 
-        if (triggerPolicy != null && triggerPolicy != StreamWindow.Policy.NONE) {
+        if (triggerPolicy != null && !triggerPolicy.equals(Window.NONE_POLICY)) {
             switch (triggerPolicy) {
-            case COUNT:
-                port().triggerCount(((Number) triggerConfig).intValue());
-                break;
-            case TIME:
-                port().triggerTime((Long) triggerConfig, triggerTimeUnit);
+            case Window.COUNT_POLICY:
+            case Window.TIME_POLICY:
                 break;
             default:
-                ;
-                throw new UnsupportedOperationException(evictPolicy.name());
+                throw new UnsupportedOperationException(triggerPolicy);
             }
 
-            winJson.put("triggerPolicy", triggerPolicy.name());
-            winJson.put("triggerConfig", triggerConfig);
+            winJson.addProperty("triggerPolicy", triggerPolicy);
+            winJson.addProperty("triggerConfig", (Number) triggerConfig);
             if (triggerTimeUnit != null)
-                winJson.put("triggerTimeUnit", triggerTimeUnit.name());
+                winJson.addProperty("triggerTimeUnit", triggerTimeUnit.name());
         }
 
         if (partitioned) {
-            port().partitioned();
-            winJson.put("partitioned", partitioned);
+            winJson.addProperty("partitioned", partitioned);
         }
 
-        json().put("window", winJson);
+        _json().add("window", winJson);
 
         return this;
     }

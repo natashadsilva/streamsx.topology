@@ -99,8 +99,6 @@ public class JobConfigOverlaysFileTest extends TestTopology {
         
         assertTrue(jcos.get("jobConfigOverlays").getAsJsonArray().get(0).isJsonObject());
         
-        System.err.println("DDDD:" + jcos);
-        
         return jcos;
     }
     
@@ -118,18 +116,11 @@ public class JobConfigOverlaysFileTest extends TestTopology {
         assertTrue(jco.has("deploymentConfig"));
         assertTrue(jco.get("deploymentConfig").isJsonObject());
         
+        // Now parall channel isolation is not set by default
         JsonObject deployConfig = jco.get("deploymentConfig").getAsJsonObject();
-        assertEquals(1, deployConfig.entrySet().size());
+        assertEquals(0, deployConfig.entrySet().size());
         assertMissing(deployConfig, "fusionScheme");
         
-        assertTrue(deployConfig.has("parallelRegionConfig"));
-        assertTrue(deployConfig.get("parallelRegionConfig").isJsonObject());
-        
-        JsonObject parallelRegionConfig = deployConfig.get("parallelRegionConfig").getAsJsonObject();
-        assertTrue(parallelRegionConfig.has("fusionType"));
-        assertTrue(parallelRegionConfig.get("fusionType").isJsonPrimitive());
-        assertEquals("channelIsolation", parallelRegionConfig.get("fusionType").getAsString());
-                  
         assertMissing(jco, "operatorConfigs");
     }
     
@@ -185,7 +176,7 @@ public class JobConfigOverlaysFileTest extends TestTopology {
         
         // Just a simple graph, which won't be executed.
         Topology topology = newTopology("testNoConfig");
-        topology.constants(Collections.emptyList()).isolate().sink(tuple -> {});
+        topology.constants(Collections.emptyList()).isolate().forEach(tuple -> {});
         
         sab = bundler().submit(topology).get();
         JsonObject jcos = assertSabGetJcos(topology);

@@ -66,7 +66,7 @@
 
   <target name="release" depends="clean,all,doc,create_release_bundle"/>
 
-  <target name="doc" depends="checkJava8">
+  <target name="doc">
        <mkdir dir="${tk.doc}"/>
        <ant dir="samples/java/functional" target="doc"/>
        <mkdir dir="${tk.doc}/samples/javadoc"/>
@@ -78,15 +78,19 @@
           Windowtitle="Java Application API for IBM Streams"
           Footer="streamsx.topology ${streamsx.topology.version} @ IBMStreams GitHub"
           failonerror="yes"
-          additionalparam="${disableJavadocLint}"
+          additionalparam="-Xdoclint:none"
           >
-            <fileset dir="java/src">
-               <include name="com/ibm/streamsx/topology/**"/>
+            <packageset dir="java/src">
                <exclude name="com/ibm/streamsx/topology/context/remote/**"/>
                <exclude name="com/ibm/streamsx/topology/internal/**"/>
                <exclude name="com/ibm/streamsx/topology/builder/**"/>
                <exclude name="com/ibm/streamsx/topology/generator/**"/>
-            </fileset>
+               
+            </packageset>
+            <packageset dir="java/runtime/src">
+               <include name="com/ibm/streamsx/topology/**"/>
+               <exclude name="com/ibm/streamsx/topology/internal/**"/>
+            </packageset>
        </javadoc>
        <ant dir="toolkit" target="spldoc"/>
        <ant dir="scala" target="scaladoc"/>
@@ -97,7 +101,7 @@
       <tstamp/>
       <property name="release.dir" location="${release.base}" />
       <mkdir dir="${release.dir}" />
-      <property name="releasefilename" value="${release.dir}/streamsx.topology-v1.6-${DSTAMP}-${TSTAMP}.tgz"/>
+      <property name="releasefilename" value="${release.dir}/streamsx.topology-v1.11-${DSTAMP}-${TSTAMP}.tgz"/>
       <tar compression="gzip" longfile="gnu" destfile="${releasefilename}">
          <tarfileset dir="${basedir}" filemode="755" >
            <include name="**/pyversion*.sh"/>

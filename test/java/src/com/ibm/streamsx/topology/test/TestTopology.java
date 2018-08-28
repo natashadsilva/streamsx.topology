@@ -5,10 +5,10 @@
 package com.ibm.streamsx.topology.test;
 
 import static com.ibm.streamsx.topology.context.StreamsContextFactory.getStreamsContext;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
-import static org.junit.Assert.assertNotNull;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -31,6 +31,7 @@ import com.ibm.streamsx.topology.context.ContextProperties;
 import com.ibm.streamsx.topology.context.StreamsContext;
 import com.ibm.streamsx.topology.context.StreamsContext.Type;
 import com.ibm.streamsx.topology.context.StreamsContextFactory;
+import com.ibm.streamsx.topology.internal.streams.Util;
 import com.ibm.streamsx.topology.spl.SPLStream;
 import com.ibm.streamsx.topology.tester.Condition;
 import com.ibm.streamsx.topology.tester.Tester;
@@ -75,15 +76,12 @@ public class TestTopology {
     
     @Before
     public void setupConfig() {
-        
-        
-        List<String> vmArgs = new ArrayList<>();
-        config.put(ContextProperties.VMARGS, vmArgs);
-        
-        if (getTesterType() != Type.EMBEDDED_TESTER) {
            
+        if (getTesterType() == Type.STANDALONE_TESTER || getTesterType() == Type.DISTRIBUTED_TESTER) {
+                       
             File agentJar = new File(System.getProperty("user.home"), ".ant/lib/jacocoagent.jar");
             if (agentJar.exists()) {
+                List<String> vmArgs = new ArrayList<>();
                 String now = Long.toHexString(System.currentTimeMillis());
                 String destFile = "jacoco_" + getTesterType().name() + now + ".exec";
      
@@ -93,13 +91,15 @@ public class TestTopology {
                         + "=destfile="
                         + destFile;
                 vmArgs.add(arg);
+                config.put(ContextProperties.VMARGS, vmArgs);
             }
         }
+            
         // Look for a different compiler
         String differentCompile = System.getProperty(ContextProperties.COMPILE_INSTALL_DIR);
         if (differentCompile != null) {
             config.put(ContextProperties.COMPILE_INSTALL_DIR, differentCompile);
-            Topology.STREAMS_LOGGER.setLevel(Level.INFO);
+            Util.STREAMS_LOGGER.setLevel(Level.INFO);
         }
     }
     
@@ -120,6 +120,9 @@ public class TestTopology {
      */
     protected static Topology newTopology(String name) {
         return new Topology(name + "_" + topoCounter.getAndIncrement() + "_" + baseName);
+    }  
+    protected static Topology newTopology(String ns, String name) {
+        return new Topology(ns, name + "_" + topoCounter.getAndIncrement() + "_" + baseName);
     }   
 
     /**
@@ -134,6 +137,10 @@ public class TestTopology {
     public boolean isEmbedded() {
         return getTesterType() == Type.EMBEDDED_TESTER;
     }
+    
+    public boolean isDistributedOrService() {
+        return isStreamingAnalyticsRun() || getTesterType() == Type.DISTRIBUTED_TESTER; 
+    }
 
     /**
      * The main run of tests will be with EMBEDDED_TESTER This allows tests to
@@ -141,6 +148,13 @@ public class TestTopology {
      */
     public boolean isMainRun() {
         return getTesterType() == Type.EMBEDDED_TESTER;
+    }
+    public boolean isStreamingAnalyticsRun() {
+        return getTesterType() == Type.STREAMING_ANALYTICS_SERVICE_TESTER;
+    }
+    public static boolean hasStreamsInstall() {
+        String si = System.getenv("STREAMS_INSTALL");
+        return si != null && !si.isEmpty();
     }
     
     public Map<String,Object> getConfig() {
@@ -238,12 +252,38 @@ public class TestTopology {
         assumeTrue(getTesterType() != StreamsContext.Type.EMBEDDED_TESTER);
         assumeTrue(SC_OK);
     }
+
+    /**
+     * Assume optional data types support.
+     */
+    protected void assumeOptionalTypes() {
+        checkMinimumVersion("Optional data types support required", 4, 3);
+    }
         
     /**
      * Only run a test at a specific minimum version or higher.
      */
     protected void checkMinimumVersion(String reason, int... vrmf) {
+        if (!hasStreamsInstall()) {
+            // must be at least 4.2
+            if (vrmf.length >= 2) {
+                if (vrmf[0] == 4) {
+                    assumeTrue(2 >= vrmf[1]);
+                    return;
+                }
+            }
+            fail("Invalid version supplied!");
+        }
+        
         switch (vrmf.length) {
+        case 3:
+            assumeTrue((Product.getVersion().getVersion() > vrmf[0])
+                     || (Product.getVersion().getVersion() == vrmf[0] &&
+                             Product.getVersion().getRelease() > vrmf[1])
+                     || (Product.getVersion().getVersion() == vrmf[0] &&
+                             Product.getVersion().getRelease() == vrmf[1] &&
+                             Product.getVersion().getMod() >= vrmf[2]));
+            break;
         case 2:
             assumeTrue((Product.getVersion().getVersion() > vrmf[0])
                      || (Product.getVersion().getVersion() == vrmf[0] &&
@@ -261,6 +301,17 @@ public class TestTopology {
      * Only run a test at a specific maximum version or lower.
      */
     protected void checkMaximumVersion(String reason, int... vrmf) {
+        
+        if (!hasStreamsInstall()) {
+            // must be at least 4.2
+            if (vrmf.length >= 2) {
+                if (vrmf[0] == 4) {
+                    assumeTrue(vrmf[1] >= 2);
+                    return;
+                }
+            }
+        }
+        
         switch (vrmf.length) {
         case 2:
             assumeTrue((Product.getVersion().getVersion() < vrmf[0])
@@ -280,13 +331,21 @@ public class TestTopology {
      */
     protected void skipVersion(String reason, int ...vrmf) {
         
+        if (!hasStreamsInstall()) {
+            // must be at least 4.2
+            if (vrmf.length == 2) {
+                if (vrmf[0] == 4) {
+                    assumeTrue(vrmf[1] != 2);
+                    return;
+                }          
+            }
+            fail("Invalid version supplied!");
+        }
+        
         switch (vrmf.length) {
-        case 4:
-            assumeTrue(Product.getVersion().getFix() != vrmf[3]);
-        case 3:
-            assumeTrue(Product.getVersion().getMod() != vrmf[2]);
         case 2:
-            assumeTrue(Product.getVersion().getRelease() != vrmf[1]);
+            assumeTrue(Product.getVersion().getVersion() != vrmf[0]
+                    && Product.getVersion().getRelease() != vrmf[1]);
         case 1:
             assumeTrue(Product.getVersion().getVersion() != vrmf[0]);
             break;
@@ -314,7 +373,7 @@ public class TestTopology {
                 seconds, TimeUnit.SECONDS,
                 contents);
 
-        assertTrue(expectedContents.toString(), expectedContents.valid());
+        assertTrue("Expected:" + contents, expectedContents.valid());
     }
     
     /**
@@ -355,5 +414,13 @@ public class TestTopology {
             return true;
         }
         return false;
+    }
+    
+    /**
+     * Can the test generate ADL.
+     */
+    protected void adlOk() {
+        assumeTrue(SC_OK);
+        assumeTrue(getTesterType() == StreamsContext.Type.STANDALONE_TESTER);
     }
 }

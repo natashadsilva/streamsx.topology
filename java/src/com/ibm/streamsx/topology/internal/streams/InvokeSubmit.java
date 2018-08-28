@@ -17,17 +17,15 @@ import java.util.Scanner;
 import java.util.logging.Logger;
 
 import com.google.gson.JsonObject;
-import com.ibm.streams.operator.version.Product;
-import com.ibm.streams.operator.version.Version;
-import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 import com.ibm.streamsx.topology.internal.process.ProcessOutputToLogger;
 import com.ibm.streamsx.topology.jobconfig.JobConfig;
 import com.ibm.streamsx.topology.jobconfig.SubmissionParameter;
+import com.ibm.streamsx.topology.internal.messages.Messages;
 
 public class InvokeSubmit {
 
-    static final Logger trace = Topology.STREAMS_LOGGER;
+    static final Logger trace = Util.STREAMS_LOGGER;
 
     private final File bundle;
 
@@ -52,6 +50,11 @@ public class InvokeSubmit {
 
         commands.add(sj.getAbsolutePath());
         commands.add("submitjob");
+        String user = System.getenv(Util.STREAMS_USERNAME);
+        if (user != null) {
+            commands.add("--User");
+            commands.add(user);
+        }
         commands.add("--outfile");
         commands.add(jobidFile.getAbsolutePath());
                 
@@ -60,9 +63,7 @@ public class InvokeSubmit {
         // For IBM Streams 4.2 or later use the job config overlay
         // V.R.M.F
         File jcoFile = null;
-        Version ver = Product.getVersion();
-        if (ver.getVersion() > 4 ||
-                (ver.getVersion() ==4 && ver.getRelease() >= 2)) {
+        if (Util.versionAtLeast(4, 2, 0)) {
             jcoFile = fileJobConfig(commands, deploy);
         } else {         
             explicitJobConfig(commands, jobConfig);
@@ -89,11 +90,11 @@ public class InvokeSubmit {
             int rc = sjProcess.waitFor();
             trace.info("streamtool submitjob complete: return code=" + rc);
             if (rc != 0)
-                throw new Exception("streamtool submitjob failed!");
+                throw new Exception(Messages.getString("STREAMS_STREAMTOOL_SUBMITJOB_FAILED"));
             
             try (Scanner jobIdScanner = new Scanner(jobidFile)) {
                 if (!jobIdScanner.hasNextBigInteger())
-                    throw new Exception("streamtool failed to supply a job identifier!");
+                    throw new Exception(Messages.getString("STREAMS_STREAMTOOL_FAILED_TO_SUPPLY"));
                 
                 BigInteger jobId = jobIdScanner.nextBigInteger();
                 trace.info("Bundle: " + bundle.getName() + " submitted with jobid: " + jobId);            

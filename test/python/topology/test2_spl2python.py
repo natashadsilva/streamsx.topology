@@ -3,8 +3,7 @@
 import unittest
 import sys
 import itertools
-
-import test_vers
+import threading
 
 from streamsx.topology.topology import *
 from streamsx.topology.tester import Tester
@@ -26,10 +25,15 @@ schemas = [
      'tuple<uint64 seq, rstring rs, float64 f64>',
      cs.Json, cs.String]
 
-@unittest.skipIf(not test_vers.tester_supported() , "tester not supported")
 class TestSPL2Python(unittest.TestCase):
     """ Test invocations handling of SPL schemas in Python ops.
     """
+    _multiprocess_can_split_ = True
+
+    # Fake out subTest
+    if sys.version_info.major == 2:
+        def subTest(self, **args): return threading.Lock()
+
     def setUp(self):
         Tester.setup_standalone(self)
 
@@ -42,9 +46,14 @@ class TestSPL2Python(unittest.TestCase):
                 topo = Topology('test_schemas_filter')
                 b = beacon(topo, schema)
                 f = b.filter(lambda tuple : True)
+
+                f2 = b.filter(lambda tuple : True)
+                f2 = op.Map('spl.relational::Filter', f2).stream
+
+                f = f.union({f2})
         
                 tester = Tester(topo)
-                tester.tuple_count(f, 100)
+                tester.tuple_count(f, 200)
                 tester.test(self.test_ctxtype, self.test_config)
 
     def test_schemas_map(self):
@@ -56,9 +65,14 @@ class TestSPL2Python(unittest.TestCase):
                 topo = Topology('test_schemas_map')
                 b = beacon(topo, schema)
                 f = b.map(lambda tuple : tuple)
+
+                f2 = b.map(lambda tuple : tuple)
+                f2 = op.Map('spl.relational::Filter', f2).stream
+
+                f = f.union({f2})
         
                 tester = Tester(topo)
-                tester.tuple_count(f, 100)
+                tester.tuple_count(f, 200)
                 tester.test(self.test_ctxtype, self.test_config)
 
     def test_schemas_flat_map(self):
@@ -70,9 +84,16 @@ class TestSPL2Python(unittest.TestCase):
                 topo = Topology('test_schemas_flat_map')
                 b = beacon(topo, schema)
                 f = b.flat_map(lambda tuple : [tuple, tuple])
-        
+
+                # Check all combinations of the output type
+                # passing by value
+                f2 = b.flat_map(lambda tuple : [tuple, tuple, tuple])
+                f2 = op.Map('spl.relational::Filter', f2).stream
+
+                f = f.union({f2})
+
                 tester = Tester(topo)
-                tester.tuple_count(f, 200)
+                tester.tuple_count(f, 500)
                 tester.test(self.test_ctxtype, self.test_config)
 
     def test_schemas_for_each(self):
@@ -89,12 +110,30 @@ class TestSPL2Python(unittest.TestCase):
                 tester.tuple_count(b, 100)
                 tester.test(self.test_ctxtype, self.test_config)
 
-@unittest.skipIf(not test_vers.tester_supported() , "tester not supported")
+    def test_map_opt(self):
+        """Test optional type value and no value are passed correctly
+        """
+        Tester.require_streams_version(self, '4.3')
+        topo = Topology('test_map_opt')
+        schema='tuple<optional<uint64> i>'
+        b = op.Source(topo, "spl.utility::Beacon", schema,
+            params = {'iterations':3})
+        b.i = b.output('IterationCount() % 2ul == 0ul ?' +
+           'IterationCount() : (optional<uint64>) null')
+        s = b.stream
+        f = s.map(lambda tuple :
+            (1,) if tuple['i'] == None
+            else (None,) if tuple['i'] == 2
+            else (tuple['i'],), schema=schema)
+        tester = Tester(topo)
+        tester.contents(s, [{'i':0}, {'i':None}, {'i':2}])
+        tester.contents(f, [{'i':0}, {'i':1}, {'i':None}])
+        tester.test(self.test_ctxtype, self.test_config)
+
 class TestDistributedSPL(TestSPL2Python):
     def setUp(self):
         Tester.setup_distributed(self)
 
-@unittest.skipIf(not test_vers.tester_supported() , "tester not supported")
 class TestBluemixSPL(TestSPL2Python):
     def setUp(self):
         Tester.setup_streaming_analytics(self, force_remote_build=True)

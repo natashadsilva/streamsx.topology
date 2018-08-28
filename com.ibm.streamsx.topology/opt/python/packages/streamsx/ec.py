@@ -2,16 +2,21 @@
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2017
 """
-Overview
---------
 Access to the IBM Streams execution context.
+
+********
+Overview
+********
+
+This module (`streamsx.ec`) provides access to the execution
+context when Python code is running in a Streams application.
 
 A Streams application runs distributed or standalone.
 
 Distributed
------------
+===========
 Distributed is used when an application is submitted
-to the Streaming Analytics service on IBM Bluemix cloud platform
+to the Streaming Analytics service on IBM Cloud
 or a IBM Streams distributed instance.
 
 With distributed a running application is a `job` that
@@ -21,19 +26,69 @@ The PEs in a job may be distributed across the
 resources (hosts) in the Streams instance.
 
 Standalone
-----------
+==========
 Standalone is a mode where the complete application is run
 as a single PE (process) outside of a Streams instance.
 
 Standalone is typically used for ad-hoc testing of an application.
 
+.. _streams_app_log_trc:
+
+*************************
+Application log and trace
+*************************
+
+IBM Streams provides application trace and log services.
+
+Application log
+===============
+
+The `Streams application log` service is for application logging, where logging is defined as the recording of serviceability information pertaining to application or operator events. The purpose of logging is to provide an administrator with enough information to do problem determination for items they can potentially control. In general, very few events are logged in the normal running scenario of an application or operator. Events pertinent to the failure or partial failure of application runtime scenarios should be logged. 
+
+When running in distributed or standalone the `com.ibm.streams.log` logger has a handler that records messages to the `Streams application log` service. The level of the logger and its handler are set to the configured application log level at PE start up.
+
+This logger and handler discard any message with level below `INFO` (20).
+
+Python application code can log a message suitable for an administrator by using
+the `com.ibm.streams.log` logger or a child logger that has ``logger.propagate`` evaulating to ``True``. Example of logging a file exception::
+
+    try:
+        import numpy
+    except ImportError as e:
+        logging.getLogger('com.ibm.streams.log').error(e)
+        raise
+
+Application code must not modify the `com.ibm.streams.log` logger, if additional handlers or different levels are required a child logger should be used.
+
+Application trace
+=================
+
+The `Streams application trace` service is for application tracing, where tracing is defined as the recording of application or operator internal events and data. The purpose of tracing is to allow application or operator developers to debug their applications or operators. 
+
+When running in distributed or standalone the root logger has a handler that records messages to the `Streams application trace` service. The level of the logger and its handler are set to the configured application trace level at PE start up.
+
+Python application code can trace a message using
+the root logger or a child logger that has ``logger.propagate`` evaulating to ``True``. Example of logging a trace message::
+
+    trace = logging.getLogger(__name__)
+  
+    ...
+
+        trace.info("Threshold set to %f", val)
+
+Any existing logging performed by modules will automatically become
+Streams trace messages if the application is using the `logging` package.
+
+Application code must not modify the root logger, if additional handlers or different levels are required a child logger should be used.
+
+*****************
 Execution Context
------------------
-This module (`streamsx.exec`) provides access to the execution
+*****************
+
+This module (`streamsx.ec`) provides access to the execution
 context when Python code is running in a Streams application.
 
 Access is only supported when running:
- * Python 3.5
  * Streams 4.2 or later
 
 This module may be used by Python functions or classes used
@@ -42,12 +97,17 @@ in a `Topology` or decorated SPL operators.
 Most functionality is only available when a Python class is
 being invoked in a Streams application.
 
+.. versionchanged:: 1.9 Support for Python 2.7
+
 """
+
+from future.builtins import *
 
 import enum
 import pickle
 import threading
 import importlib
+import logging
 import sys
 
 try:
@@ -81,7 +141,7 @@ def _check():
             _State._state = _State(False)
 
     if not _State._state._supported:
-        raise NotImplementedError("Access to the execution context requires Python 3.5 and Streams 4.2 or later")
+        raise NotImplementedError("Access to the execution context requires Streams 4.2 or later")
 
 def domain_id():
     """
@@ -120,6 +180,17 @@ def is_standalone():
     """
     _check()
     return _ec.is_standalone()
+
+def get_application_directory():
+    """Get the application directory.
+
+    Returns:
+        str: The application directory.
+
+    .. versionadded:: 1.7
+    """
+    _check()
+    return _ec.get_application_directory()
 
 def get_application_configuration(name):
     """Get a named application configuration.
@@ -252,6 +323,17 @@ class CustomMetric(object):
 
     Custom metrics are exposed through the IBM Streams monitoring APIs.
 
+    Metric ``name`` is unique within the execution context of the
+    callable ``obj``. Attempts to create multiple metrics with the
+    same name but different kinds will raise an exception. Multiple
+    creations of a metric of the same name and kind all refer to
+    the same metric, the first creation is the only one that will
+    set the initial value.
+
+    The metric's value is assigned through the ``value`` property
+    and can be modified through ``+=`` and ``-=``. ``CustomMetric``
+    can also be converted to an ``int``.
+    
     Args:
         obj: Instance of a class executing within Streams.
         name(str): Name of the custom metric.
@@ -327,12 +409,12 @@ class CustomMetric(object):
         return "{0}({1}):{2}".format(self.name, self.kind.name,self.value)
 
     def __iadd__(self, other):
-        """
-        Increment the current value of the metric.
-        """
         args = (self.__ptr, int(other))
         _ec.metric_inc(args)
         return self
+
+    def __isub__(self, other):
+        return self.__iadd__(-int(other))
 
     def __int__(self):
         return self.value
@@ -381,19 +463,98 @@ def _get_opc(obj):
              pass
         raise AssertionError("InternalError")
 
-def _shutdown_op(callable):
-    if hasattr(callable, '_shutdown'):
-        callable._shutdown()
+def _shutdown_op(callable_, exc_info=None):
+    if hasattr(callable_, '_splpy_shutdown'):
+        if exc_info is None:
+            return callable_._splpy_shutdown()
+        exc_type = exc_info[0]
+        exc_value = exc_info[1] if len(exc_info) >=2 else None
+        traceback = exc_info[2] if len(exc_info) >=3 else None
+        return callable_._splpy_shutdown(exc_type, exc_value, traceback)
+    return False
 
-def _callable_enter(callable):
+def _callable_enter(callable_):
     """Called at initialization time.
     """
-    if hasattr(callable, '__enter__') and hasattr(callable, '__exit__'):
-        callable.__enter__()
+    if hasattr(callable_, '_splpy_entered') and callable_._splpy_entered == False:
+        return
+    if hasattr(callable_, '__enter__') and hasattr(callable_, '__exit__'):
+        callable_.__enter__()
+        callable_._splpy_entered = True
 
-def _callable_exit_clean(callable):
+def _callable_exit(callable_, exc_type, exc_value, traceback):
     """Called at shutdown time.
+    Call the callable's __exit__ returning its return.
+    If no callable then return False to indicate the error should
+    be acted upon.
     """
-    if hasattr(callable, '__enter__') and hasattr(callable, '__exit__'):
-        callable.__exit__(None, None, None)
+    if hasattr(callable_, '_splpy_entered') and callable_._splpy_entered:
+        ignore = callable_.__exit__(exc_type, exc_value, traceback)
+        if (not ignore) or exc_type is None:
+            callable_._splpy_entered = False
+        return ignore
+    return False
+        
+def _submit(primitive, port_index, tuple_):
+    """Internal method to submit a tuple"""
+    args = (_get_opc(primitive), port_index, tuple_)
+    _ec._submit(args)
 
+#
+# Application Trace & Log
+#
+class _AppHandler(logging.Handler):
+    def __init__(self, lvl, fn):
+        super(_AppHandler, self).__init__(lvl)
+        self._emit_to_streams = fn
+
+    def createLock(self):
+        # Locking handled by Streams runtime
+        self.lock = None
+
+    def emit(self, record):
+        pylvl = record.levelno
+        aspects = 'python'
+        if record.module:
+            aspects = aspects + ',' + str(record.module)
+        lineno = record.lineno if isinstance(record.lineno, int) else -1
+        self._emit_to_streams((pylvl, record.getMessage(), aspects,
+              record.funcName, record.filename, lineno))
+
+# Hold onto loggers to ensure
+# our appender does not disappear
+_LOGGERS = {}
+
+# Ensure we setup each logger once only.
+def _setup():
+    if _is_supported():
+        trace = logging.getLogger()
+        if 'trace' not in _LOGGERS:
+            _LOGGERS['trace'] = trace
+            trc_lvl = _ec._app_trc_level()
+            # Python does not have the concept of OFF
+            if trc_lvl == 0:
+                trc_lvl = logging.CRITICAL
+            trace.addHandler(_AppHandler(trc_lvl, _ec._app_trc));
+            trace.setLevel(trc_lvl)
+
+        log = logging.getLogger('com.ibm.streams.log')
+        if 'log' not in _LOGGERS:
+            _LOGGERS['log'] = log
+            log_lvl = _ec._app_log_level()
+            # Python does not have the concept of OFF
+            if log_lvl == 0:
+                log_lvl = logging.CRITICAL
+            log.propagate = False
+            log.addHandler(_AppHandler(log_lvl, _ec._app_log));
+            log.setLevel(log_lvl)
+
+
+_SUBMIT_PARAMS = dict()
+
+# Called from C++ Python functional operators to make
+# submission parameters visible to Python callables.
+# Each name and value are strings.
+def _set_submit_param(name, value):
+    if name not in _SUBMIT_PARAMS: 
+        _SUBMIT_PARAMS[name] = value

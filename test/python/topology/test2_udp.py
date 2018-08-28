@@ -1,17 +1,18 @@
+# coding=utf-8
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2016
+from __future__ import print_function
 import unittest
 import sys
 import itertools
 import string
 import random
+import threading
 
 from streamsx.topology.topology import *
 from streamsx.topology.tester import Tester
 import streamsx.ec as ec
 import streamsx.spl.op as op
-
-import test_vers
 
 class AddChannel(object):
     def __init__(self):
@@ -47,13 +48,62 @@ def stupid_hash(v):
     return hash(v+89)
 
 def s2_hash(t):
-    return t['s2']
+    return hash(t['s2'])
 
-@unittest.skipIf(not test_vers.tester_supported() , "Tester not supported")
 class TestUDP(unittest.TestCase):
+  _multiprocess_can_split_ = True
+
+  # Fake out subTest
+  if sys.version_info.major == 2:
+      def subTest(self, **args): return threading.Lock()
 
   def setUp(self):
       Tester.setup_standalone(self)
+
+  def test_TopologyNestedParallel(self):
+      topo = Topology()
+      s = topo.source([1])
+      s = s.parallel(5, routing=Routing.BROADCAST)
+      s = s.parallel(5, routing=Routing.BROADCAST)
+      s = s.map(lambda x: x)
+      s = s.end_parallel()
+      s = s.end_parallel()
+      s.print()
+      
+      tester = Tester(topo)
+      tester.contents(s, [1 for i in range(25)])
+      tester.test(self.test_ctxtype, self.test_config)
+      print(tester.result)
+
+  def test_TopologySetParallel(self):
+      topo = Topology("test_TopologySetParallel")
+      s = topo.source([1])
+      s.set_parallel(5)
+      s = s.end_parallel()
+      
+      tester = Tester(topo)
+      tester.contents(s, [1,1,1,1,1])
+      tester.test(self.test_ctxtype, self.test_config)
+      print(tester.result)
+
+  def test_TopologyMultiSetParallel(self):
+      topo = Topology("test_TopologyMultiSetParallel")
+
+      s = topo.source([1])
+      s.set_parallel(5)
+
+      s2 = topo.source([2])
+      s2.set_parallel(5)
+
+      s = s.union({s2})
+      # #1750 ensure we are not depending on last op
+      o = topo.source([2])
+      s = s.end_parallel()
+      
+      tester = Tester(topo)
+      tester.contents(s, [1,1,1,1,1,2,2,2,2,2], ordered=False)
+      tester.test(self.test_ctxtype, self.test_config)
+      print(tester.result)
 
   def test_TopologyParallelRoundRobin(self):
       for width in (1,3):
@@ -63,6 +113,8 @@ class TestUDP(unittest.TestCase):
               s = s.parallel(width)
               s = s.map(lambda tuple : tuple + 19)
               s = s.end_parallel()
+              # Issue #1742 - ensure a view can be created
+              v = s.view()
 
               tester = Tester(topo)
               tester.contents(s, range(36,161), ordered=width==1)
@@ -170,12 +222,31 @@ class TestUDP(unittest.TestCase):
               tester.test(self.test_ctxtype, self.test_config)
               print(tester.result)
 
-@unittest.skipIf(not test_vers.tester_supported() , "Tester not supported")
+  def test_in_region_multi_use(self):
+        topo = Topology("test_TopologyMultiSetParallel")
+
+        N = 132
+
+        s = topo.source(range(0, N))
+        s = s.parallel(3)
+        s = s.map(lambda v : v+18)
+        eo = s.end_parallel()
+        # Use s multiple times in region
+        sm = s.map(lambda v : v-23)
+
+        # and just for graph generation a termination within region
+        s.for_each(lambda v : None)
+        em = sm.end_parallel()
+      
+        tester = Tester(topo)
+        tester.contents(eo, list(range(0+18, N+18)), ordered=False)
+        tester.contents(em, list(range(0+18-23, N+18-23)), ordered=False)
+        tester.test(self.test_ctxtype, self.test_config)
+
 class TestDistributedUDP(TestUDP):
   def setUp(self):
       Tester.setup_distributed(self)
 
-@unittest.skipIf(not test_vers.tester_supported() , "Tester not supported")
 class TestBluemixUDP(TestUDP):
   def setUp(self):
       Tester.setup_streaming_analytics(self, force_remote_build=True)

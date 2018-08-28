@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +33,7 @@ import com.ibm.streamsx.topology.function.FunctionContext;
 import com.ibm.streamsx.topology.function.Initializable;
 import com.ibm.streamsx.topology.function.Predicate;
 import com.ibm.streamsx.topology.function.ToIntFunction;
+import com.ibm.streamsx.topology.function.UnaryOperator;
 import com.ibm.streamsx.topology.streams.BeaconStreams;
 import com.ibm.streamsx.topology.streams.CollectionStreams;
 import com.ibm.streamsx.topology.streams.StringStreams;
@@ -90,7 +92,7 @@ public class StreamTest extends TestTopology {
         TStream<String> source = f.strings("325", "457", "9325");
         assertStream(f, source);
 
-        TStream<Integer> i1 = source.transform(stringToInt());
+        TStream<Integer> i1 = source.map(stringToInt());
         TStream<Integer> i2 = i1.transform(add17());
         completeAndValidate(i2, 10, "342", "474", "9342");
     }
@@ -102,7 +104,7 @@ public class StreamTest extends TestTopology {
         assertStream(f, source);
 
         TStream<Integer> i1 = source.transform(stringToIntExcept68());
-        TStream<Integer> i2 = i1.transform(add17());
+        TStream<Integer> i2 = i1.map(add17());
         
         completeAndValidate(i2, 10, "110", "238");
     }
@@ -114,7 +116,7 @@ public class StreamTest extends TestTopology {
                 "its fleece was white as snow");
         assertStream(topology, source);
 
-        TStream<String> words = source.multiTransform(splitWords());
+        TStream<String> words = source.flatMap(splitWords());
         
         completeAndValidate(words, 10, "mary", "had",
                 "a", "little", "lamb", "its", "fleece", "was", "white", "as",
@@ -168,7 +170,6 @@ public class StreamTest extends TestTopology {
         assertEquals(String.class, su.getTupleClass());
         assertEquals(String.class, su.getTupleType());
         
-        // TODO - testing doesn't work against union streams in embedded.
         su = su.filter(new AllowAll<String>());
 
         Tester tester = topology.getTester();
@@ -179,8 +180,8 @@ public class StreamTest extends TestTopology {
         //assertTrue(complete(tester, suCount, 10, TimeUnit.SECONDS));
         complete(tester, suCount, 10, TimeUnit.SECONDS);
 
-        assertTrue("SU:" + suContents, suContents.valid());
-        assertTrue("SU:" + suCount, suCount.valid());
+        assertTrue("SU Contents", suContents.valid());
+        assertTrue("SU Count", suCount.valid());
 
     }
 
@@ -332,7 +333,7 @@ public class StreamTest extends TestTopology {
     @Test
     public void testFunctionContextNonDistributed() throws Exception {
         
-        assumeTrue(getTesterType() != Type.DISTRIBUTED_TESTER);
+        assumeTrue(getTesterType() == Type.STANDALONE_TESTER || getTesterType() == Type.EMBEDDED_TESTER);
         
         Topology t = newTopology();
         TStream<Map<String, Object>> values = BeaconStreams.single(t).transform(new ExtractFunctionContext());
@@ -340,14 +341,16 @@ public class StreamTest extends TestTopology {
                 
         Tester tester = t.getTester();
         
-        Condition<Long> spCount = tester.tupleCount(strings, 7);
+        Condition<Long> spCount = tester.tupleCount(strings, 9);
         Condition<List<String>> spContents = tester.stringContents(strings, 
                 "channel=-1",
                 "domainId=" + System.getProperty("user.name"),
                 "id=0",
                 "instanceId=" + System.getProperty("user.name"),
                 "jobId=0",
+                "jobName=NOTNULL",
                 "maxChannels=0",
+                "noAppConfig={}",
                 "relaunchCount=0"
                 );
 
@@ -361,7 +364,7 @@ public class StreamTest extends TestTopology {
     public static class ExtractFunctionContext
          implements Function<Long,Map<String,Object>>, Initializable {
         private static final long serialVersionUID = 1L;
-        private FunctionContext functionContext;
+        private transient FunctionContext functionContext;
         
         @Override
         public Map<String, Object> apply(Long v) {
@@ -378,6 +381,9 @@ public class StreamTest extends TestTopology {
             values.put("domainId", container.getDomainId());
             values.put("instanceId", container.getInstanceId());
             
+            values.put("jobName", container.getJobName() == null ? "NULL" : "NOTNULL");
+            values.put("noAppConfig", container.getApplicationConfiguration("no_such_config"));
+            
             return values;
         }
         
@@ -386,6 +392,45 @@ public class StreamTest extends TestTopology {
                 throws Exception {
             this.functionContext = functionContext;
             
+        }
+        
+    }
+    
+    /**
+     * Ensure we can create the three types of metrics.
+     * @throws Exception
+     */
+    @Test
+    public void testMetricCreate() throws Exception {
+
+        final Topology topo = new Topology();
+        
+        TStream<String> strings = topo.strings("a", "b", "c");
+        Tester tester = topo.getTester();
+        
+        Condition<Long> spCount = tester.tupleCount(strings, 3);
+        complete(tester, spCount, 20, TimeUnit.SECONDS);
+    }
+    
+    public static class CreateMetricTester<T> implements UnaryOperator<T>, Initializable {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public T apply(T v) {
+            return v;
+        }
+
+        @Override
+        public void initialize(FunctionContext functionContext) throws Exception {
+            functionContext.createCustomMetric("aCounter", "Counter desc.",
+                    "counter", () -> this.hashCode());
+            
+            functionContext.createCustomMetric("aTimer", "the time!", "time",
+                    System::currentTimeMillis); 
+            
+            Random r = new Random();
+            functionContext.createCustomMetric("aGauge", "Some gauge", "gauge",
+                    r::nextLong);
         }
         
     }

@@ -12,15 +12,14 @@ import streamsx.spl.op as op
 import streamsx.spl.types as spltypes
 import queue
 
-import test_vers
-
 def rands():
     r = random.Random()
     while True:
        yield r.random()
 
-@unittest.skipIf(not test_vers.tester_supported() , "Tester not supported")
 class TestViews(unittest.TestCase):
+    _multiprocess_can_split_ = True
+
     def setUp(self):
         Tester.setup_distributed(self)
 
@@ -43,7 +42,7 @@ class TestViews(unittest.TestCase):
         topo = Topology()
         s = topo.source(rands)
         throttle = op.Map('spl.utility::Throttle', s,
-            params = {'rate': 50.0})
+            params = {'rate': 25.0})
         s = throttle.stream
         self._ov = s.view()
         self._expected_type = float
@@ -59,7 +58,7 @@ class TestViews(unittest.TestCase):
         topo = Topology()
         s = topo.source(rands)
         throttle = op.Map('spl.utility::Throttle', s,
-            params = {'rate': 50.0})
+            params = {'rate': 25.0})
         s = throttle.stream
         s = s.map(lambda t : "ABC" + str(t))
         s = s.as_string()
@@ -75,13 +74,13 @@ class TestViews(unittest.TestCase):
         """ Test a view of SPL tuples.
         """
         topo = Topology()
-        s = op.Source(topo, "spl.utility::Beacon",
+        beacon = op.Source(topo, "spl.utility::Beacon",
             'tuple<uint64 seq, rstring fixed>',
-            params = {'period': 0.02, 'iterations':1000})
-        s.seq = s.output('IterationCount()')
-        s.fixed = s.output(spltypes.rstring('FixedValue'))
+            params = {'period': 0.05, 'iterations':1000})
+        beacon.seq = beacon.output('IterationCount()')
+        beacon.fixed = beacon.output(spltypes.rstring('FixedValue'))
 
-        s = s.stream
+        s = beacon.stream
         self._ov = s.view()
         self._expected_type = dict
         
@@ -89,3 +88,7 @@ class TestViews(unittest.TestCase):
         tester.local_check = self._object_view
         tester.tuple_count(s, 1000)
         tester.test(self.test_ctxtype, self.test_config)
+
+class TestViewsCloud(TestViews):
+    def setUp(self):
+        Tester.setup_streaming_analytics(self, force_remote_build=True)

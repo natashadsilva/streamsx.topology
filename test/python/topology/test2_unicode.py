@@ -1,6 +1,7 @@
 # coding=utf-8
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2017
+from __future__ import print_function
 import unittest
 
 from streamsx.topology.topology import *
@@ -11,22 +12,9 @@ from streamsx import rest
 import streamsx.ec as ec
 
 
-import test_vers
-
-class view_name_source(object):
-    """A class which wraps a StreamsConnection object and returns the view name
-    """
-    def __init__(self, sc):
-        self.sc = sc
-
-    def __call__(self):
-        instance = self.sc.get_instance(id=ec.instance_id())
-        job = instance.get_job(id=ec.job_id())
-        for view in job.get_views():
-            yield view.name
-
-@unittest.skipIf(not test_vers.tester_supported() , "Tester not supported")
 class TestUnicode(unittest.TestCase):
+    _multiprocess_can_split_ = True
+
     def setUp(self):
         Tester.setup_standalone(self)
 
@@ -39,19 +27,19 @@ class TestUnicode(unittest.TestCase):
         """
         topo = Topology()
         ud = []
-        ud.append('⡍⠔⠙⠖ ⡊ ⠙⠕⠝⠰⠞ ⠍⠑⠁⠝ ⠞⠕ ⠎⠁⠹ ⠹⠁⠞ ⡊ ⠅⠝⠪⠂ ⠕⠋ ⠍⠹')
-        ud.append('2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm')
-        ud.append('многоязычных')
+        ud.append(u'⡍⠔⠙⠖ ⡊ ⠙⠕⠝⠰⠞ ⠍⠑⠁⠝ ⠞⠕ ⠎⠁⠹ ⠹⠁⠞ ⡊ ⠅⠝⠪⠂ ⠕⠋ ⠍⠹')
+        ud.append(u'2H₂ + O₂ ⇌ 2H₂O, R = 4.7 kΩ, ⌀ 200 mm')
+        ud.append(u'многоязычных')
         ud.append("Arsenal hammered 5-1 by Bayern again")
-        s = topo.source(ud, name='façade')
+        s = topo.source(ud, name=u'façade')
         sas = s.as_string()
-        sd = s.map(lambda s : {'val': s + "_test_it!"})
+        sd = s.map(lambda s : {'val': s + u"_test_it!"})
         tester = Tester(topo)
         tester.contents(s, ud)
         tester.contents(sas, ud)
         dud = []
         for v in ud:
-            dud.append({'val': v + "_test_it!"})
+            dud.append({'val': v + u"_test_it!"})
         tester.contents(sd, dud)
 
         tester.test(self.test_ctxtype, self.test_config)
@@ -63,29 +51,32 @@ class TestUnicode(unittest.TestCase):
         """
         if self.test_ctxtype == context.ContextTypes.STANDALONE:
             return self.skipTest("Skipping unicode view tests for standalone.")
-        view_names = ["®®®®", "™¬⊕⇔"]
+        view_names = [u"®®®®", u"™¬⊕⇔"]
         topo = Topology()
-        view_name_stream = topo.source(view_name_source(self.sc))
 
         view0 = topo.source(["hello"]).view(name=view_names[0])
-        view1 = topo.source(["hello"]).view(name=view_names[1])
+        view1 = topo.source(["view!"]).view(name=view_names[1])
 
-        tester = Tester(topo)
-        tester.contents(view_name_stream, view_names, ordered=False)
+        self.tester = Tester(topo)
+        self.tester.local_check = self._check_view_names
 
-        # For running Bluemix tests, the username & password need a default value of None
-        username = getattr(self, "username", None)
-        password = getattr(self, "password", None)
-        tester.test(self.test_ctxtype, self.test_config, username=username, password=password)
+        self.tester.test(self.test_ctxtype, self.test_config)
 
-@unittest.skipIf(not test_vers.tester_supported() , "Tester not supported")
+    def _check_view_names(self):
+        job = self.tester.submission_result.job
+        view_names = []
+        for view in job.get_views():
+            view_names.append(view.name)
+        self.assertIn(u"®®®®", view_names)
+        self.assertIn(u"™¬⊕⇔", view_names)
+
 class TestDistributedUnicode(TestUnicode):
     def setUp(self):
         Tester.setup_distributed(self)
 
         # Get username and password
-        username = self.username
-        password = self.password
+        username = os.getenv("STREAMS_USERNAME", "streamsadmin")
+        password = os.getenv("STREAMS_PASSWORD", "passw0rd")
 
         self.sc = rest.StreamsConnection(username=username, password=password)
 
@@ -93,7 +84,6 @@ class TestDistributedUnicode(TestUnicode):
         self.sc.session.verify = False
         self.test_config[ConfigParams.STREAMS_CONNECTION] = self.sc
 
-@unittest.skipIf(not test_vers.tester_supported() , "Tester not supported")
 class TestBluemixUnicode(TestUnicode):
     def setUp(self):
         Tester.setup_streaming_analytics(self, force_remote_build=True)

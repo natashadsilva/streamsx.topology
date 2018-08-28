@@ -12,13 +12,13 @@ import java.util.List;
 import java.util.logging.Logger;
 
 import com.google.gson.JsonObject;
-import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.context.ContextProperties;
 import com.ibm.streamsx.topology.internal.process.ProcessOutputToLogger;
+import com.ibm.streamsx.topology.internal.messages.Messages;
 
 public class InvokeMakeToolkit {
 
-    static final Logger trace = Topology.STREAMS_LOGGER;
+    static final Logger trace = Util.STREAMS_LOGGER;
 
     private final File toolkitDir;
     private final String installDir;
@@ -60,6 +60,6 @@ public class InvokeMakeToolkit {
         int rc = mtProcess.waitFor();
         trace.info("spl-make-toolkit complete: return code=" + rc);
         if (rc != 0)
-            throw new Exception("spl-make-toolkit failed!");
+            throw new Exception(Messages.getString("STREAMS_SPL_MAKE_TOOLKIT_FAILED"));
     }
 }

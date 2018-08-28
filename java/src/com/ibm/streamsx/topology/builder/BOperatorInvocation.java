@@ -4,35 +4,31 @@
  */
 package com.ibm.streamsx.topology.builder;
 
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.KIND;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE;
-import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_JAVA;
 import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL;
-import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_SPL;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.array;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.object;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.objectCreate;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
-import com.ibm.json.java.JSONArray;
-import com.ibm.json.java.JSONObject;
-import com.ibm.streams.flow.declare.InputPortDeclaration;
-import com.ibm.streams.flow.declare.OperatorInvocation;
-import com.ibm.streams.flow.declare.OutputPortDeclaration;
-import com.ibm.streams.operator.Attribute;
-import com.ibm.streams.operator.Operator;
-import com.ibm.streams.operator.StreamSchema;
-import com.ibm.streams.operator.Type.MetaType;
-import com.ibm.streams.operator.model.Namespace;
-import com.ibm.streams.operator.model.PrimitiveOperator;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.ibm.streamsx.topology.function.Supplier;
-import com.ibm.streamsx.topology.tuple.JSONAble;
-
-// Union(A,B)
-//   OpC(A,B)
-//   Union(A,B) --> 
-
-// Parallel
+import com.ibm.streamsx.topology.generator.operator.OpProperties;
+import com.ibm.streamsx.topology.internal.core.SubmissionParameterFactory;
+import com.ibm.streamsx.topology.internal.functional.SPLTypes;
+import com.ibm.streamsx.topology.internal.functional.SubmissionParameter;
+import com.ibm.streamsx.topology.internal.messages.Messages;
 
 /**
  * JSON representation.
@@ -48,26 +44,17 @@ import com.ibm.streamsx.topology.tuple.JSONAble;
 
 public class BOperatorInvocation extends BOperator {
 
-    private final OperatorInvocation<? extends Operator> op;
-    protected List<BInputPort> inputs;
-    protected List<BOutputPort> outputs;
-    private final JSONObject jparams = new JSONObject();
+    private List<BInputPort> inputs;
+    private List<BOutputPort> outputs;
+    private final JsonObject jparams = new JsonObject();
 
     public BOperatorInvocation(GraphBuilder bt,
-            Class<? extends Operator> opClass,
+            String kind,           
             Map<String, ? extends Object> params) {
         super(bt);
-        
-        op = bt.graph().addOperator(opClass);
-        json().put("name", op.getName());
-        json().put("parameters", jparams);
-        
-        if (!Operator.class.equals(opClass)) {   
-            json().put(MODEL, MODEL_SPL);
-            json().put(LANGUAGE, LANGUAGE_JAVA);
-            json().put("kind", getKind(opClass));
-            json().put("kind.javaclass", opClass.getCanonicalName());
-        }
+        _json().add("parameters", jparams);
+        if (kind != null)
+            _json().addProperty(KIND, kind);
 
         if (params != null) {
             for (String paramName : params.keySet()) {
@@ -75,63 +62,77 @@ public class BOperatorInvocation extends BOperator {
             }
         }
     }
-    public BOperatorInvocation(GraphBuilder bt,
-            String name,
-            Class<? extends Operator> opClass,           
+    
+    BOperatorInvocation(GraphBuilder bt,
             Map<String, ? extends Object> params) {
-        super(bt);
-        op = bt.graph().addOperator(name, opClass);
-        json().put("name", op.getName());
-        json().put("parameters", jparams);
+        this(bt, null, params);
+    }
+    
+    public void setModel(String model, String language) {
+        _json().addProperty(MODEL, model);
+        _json().addProperty(LANGUAGE, language);
+    }
+    
+    public String name() {
+        return jstring(_json(), "name");
+    }
+    
+    void rename(String newName) {
         
-        if (!Operator.class.equals(opClass)) {   
-            json().put(MODEL, MODEL_SPL);
-            json().put(LANGUAGE, LANGUAGE_JAVA);
-            json().put("kind", getKind(opClass));
-            json().put("kind.javaclass", opClass.getCanonicalName());
-        }
+        String uniqueName = builder().userSuppliedName(newName);
 
-        if (params != null) {
-            for (String paramName : params.keySet()) {
-                setParameter(paramName, params.get(paramName));
+        if (!uniqueName.equals(newName)) {
+            JsonObject nameMap = new JsonObject();
+            nameMap.addProperty(uniqueName, newName);
+            layout().add("names", nameMap);
+        }   
+        
+        // With a single output port operator its
+        // stream (output port) and operator name can be the same.
+        if (outputs != null && outputs.size() == 1) {
+            BOutputPort singleOut = outputs.get(0);
+            if (singleOut.name().equals(name())) {
+                
+                // Currently renaming only when it has no connections
+                // as connections are made using simply the name (identifier) of
+                // of the output object, not the object. Thus to rename the
+                // port we would need to ensure existing connections
+                // are updated to use the new name.
+                if (array(singleOut._json(), "connections").size() == 0) {
+                    singleOut._json().addProperty("name", uniqueName);
+                } else {
+                    // TODO: Rename when it has connections.
+                }
             }
         }
+        
+        _json().addProperty("name", uniqueName);
     }
-
-    public BOperatorInvocation(GraphBuilder bt,
-            Map<String, ? extends Object> params) {
-        this(bt, Operator.class, params);
-    }
-    public BOperatorInvocation(GraphBuilder bt,
-            String name,
-            Map<String, ? extends Object> params) {
-        this(bt, name, Operator.class, params);
-    }
-
-    /*
-    public BOperatorInvocation(GraphBuilder bt, String kind,
-            Map<String, ? extends Object> params) {
-        this(bt, Operator.class, params);
-        json().put("kind", kind);
-    }
-    */
 
     public void setParameter(String name, Object value) {
-
+        
+        if (value == null)
+            throw new IllegalStateException(Messages.getString("BUILDER_NULL_PARAM", name));
+                
+        if (value instanceof SubmissionParameter) {
+            JsonObject svp = SubmissionParameterFactory.asJSON((SubmissionParameter<?>) value);
+            /*
+            JsonObject param = new JsonObject();
+            param.add("type", svp.get("type"));
+            param.add("value", svp.get("value"));         
+            */ 
+            jparams.add(name, svp);
+            return;
+        }
+        
         Object jsonValue = value;
         String jsonType = null;
 
-        // Set the value in the OperatorInvocation.
-        
-        if (value instanceof JSONAble) {
-            value = ((JSONAble)value).toJSON();
-        }
-        if (value instanceof JSONObject) {
-            JSONObject jo = ((JSONObject) value);
-            if (jo.get("type") == null || jo.get("value") == null)
-                throw new IllegalArgumentException("Illegal JSONObject " + jo);
-            String type = (String) jo.get("type");
-            Object val = (JSONObject) jo.get("value");
+        if (value instanceof JsonObject) {
+            JsonObject jo = ((JsonObject) value);
+            if (!jo.has("type") || !jo.has("value"))
+                throw new IllegalArgumentException(Messages.getString("BUILDER_ILLEGAL_JSON_OBJECT", jo));
+            String type = jstring(jo, "type");
             if ("__spl_value".equals(type)) {
                 /*
                  * The Value object is
@@ -139,17 +140,19 @@ public class BOperatorInvocation extends BOperator {
                  * object {
                  *   type : "__spl_value"
                  *   value : object {
-                 *     value : any. non-null. type appropriate for metaType
+                 *     value : any. non-null. value appropriate for metaType
                  *     metaType : com.ibm.streams.operator.Type.MetaType.name() string
                  *   }
                  * }
                  * </code></pre>
                  */
                 // unwrap and fall through to handling for the wrapped value
-                JSONObject splValue = (JSONObject) val;
+                JsonObject splValue = object(jo, "value");
                 value = splValue.get("value");
                 jsonValue = value;
-                String metaType = (String) splValue.get("metaType");
+                jsonType = jstring(splValue, "metaType");
+                /*
+                String metaType = jstring(splValue, "metaType");
                 if ("USTRING".equals(metaType)
                         || "UINT8".equals(metaType)
                         || "UINT16".equals(metaType)
@@ -157,10 +160,12 @@ public class BOperatorInvocation extends BOperator {
                         || "UINT64".equals(metaType)) {
                     jsonType = metaType;
                 }
+                */
                 // fall through to handle jsonValue as usual 
             }
             else {
-                // other kinds of JSONObject handled below
+                jparams.add(name, jo);
+                return;
             }
         }
         else if (value instanceof Supplier<?>) {
@@ -169,87 +174,96 @@ public class BOperatorInvocation extends BOperator {
         }
                 
         if (value instanceof String) {
-            op.setStringParameter(name, (String) value);
             if (jsonType == null)
-                jsonType = MetaType.RSTRING.name();
+                jsonType = SPLTypes.RSTRING;
         } else if (value instanceof Byte) {
-            op.setByteParameter(name, (Byte) value);
             if (jsonType == null)
-                jsonType = MetaType.INT8.name();
+                jsonType = SPLTypes.INT8;
         } else if (value instanceof Short) {
-            op.setShortParameter(name, (Short) value);
             if (jsonType == null)
-                jsonType = MetaType.INT16.name();
+                jsonType = SPLTypes.INT16;
         } else if (value instanceof Integer) {
-            op.setIntParameter(name, (Integer) value);
             if (jsonType == null)
-                jsonType = MetaType.INT32.name();
+                jsonType = SPLTypes.INT32;
         } else if (value instanceof Long) {
-            op.setLongParameter(name, (Long) value);
             if (jsonType == null)
-                jsonType = MetaType.INT64.name();
+                jsonType = SPLTypes.INT64;
         } else if (value instanceof Float) {
-            op.setFloatParameter(name, (Float) value);
-            jsonType = MetaType.FLOAT32.name();
+            jsonType = SPLTypes.FLOAT32;
         } else if (value instanceof Double) {
-            op.setDoubleParameter(name, (Double) value);
-            jsonType = MetaType.FLOAT64.name();
+            jsonType = SPLTypes.FLOAT64;
         } else if (value instanceof Boolean) {
-            op.setBooleanParameter(name, (Boolean) value);
+            jsonType = SPLTypes.BOOLEAN;
         } else if (value instanceof BigDecimal) {
-            op.setBigDecimalParameter(name, (BigDecimal) value);
             jsonValue = value.toString(); // Need to maintain exact value
+            jsonType = SPLTypes.DECIMAL128;
         } else if (value instanceof Enum) {
-            op.setCustomLiteralParameter(name, (Enum<?>) value);
             jsonValue = ((Enum<?>) value).name();
             jsonType = JParamTypes.TYPE_ENUM;
-        } else if (value instanceof StreamSchema) {
-            jsonValue = ((StreamSchema) value).getLanguageType();
-            jsonType = JParamTypes.TYPE_SPLTYPE;
         } else if (value instanceof String[]) {
             String[] sa = (String[]) value;
-            JSONArray a = new JSONArray(sa.length);
+            JsonArray a = new JsonArray();
             for (String vs : sa)
-                a.add(vs);
+                a.add(new JsonPrimitive(vs));
             jsonValue = a;
-            op.setStringParameter(name, sa);
-        } else if (value instanceof Attribute) {
-            Attribute attr = (Attribute) value;
-            jsonValue = attr.getName();
-            jsonType = JParamTypes.TYPE_ATTRIBUTE;
-            op.setAttributeParameter(name, attr.getName());
-        } else if (value instanceof JSONObject) {
-            JSONObject jo = (JSONObject) value;
-            jsonType = (String) jo.get("type");
-            jsonValue = (JSONObject) jo.get("value");
+        } else if (value instanceof JsonElement) {
+            assert jsonType != null;
         } else {
-            throw new IllegalArgumentException("Type for parameter " + name + " is not supported:" +  value.getClass());
+            throw new IllegalArgumentException(Messages.getString("BUILDER_TYPE_OF_PARAMER_NOT_SUPPORTED", name, value.getClass()));
         }
-
-        // Set the value as JSON
-        JSONObject param = new JSONObject();
-        param.put("value", jsonValue);
-
-        if (jsonType != null)
-            param.put("type", jsonType);
-
-        jparams.put(name, param);
+        
+        JsonObject param = JParamTypes.create(jsonType, jsonValue);
+        
+        jparams.add(name, param);
+    }
+    
+    /**
+     * Get the raw value for a parameter for this operator invocation.
+     * @return Json representation of parameter or null if the parameter is not set.
+     */
+    public JsonObject getRawParameter(String name) {
+        if (jparams.has(name))
+            return jparams.getAsJsonObject(name);
+        return null;             
     }
 
-    public BOutputPort addOutput(StreamSchema schema) {
+    public BOutputPort addOutput(String schema) {
+        return addOutput(schema, Optional.empty());
+    }
+    
+    public BOutputPort addOutput(String schema, Optional<String> name) {
+    
         if (outputs == null)
             outputs = new ArrayList<>();
-
-        final OutputPortDeclaration port = op.addOutput(schema);
-
-        final BOutputPort stream = new BOutputPort(this, port);
+        
+        String portName;
+        if (name.isPresent())
+            portName = name.get();
+        else {
+            portName = this.name() + "_OUT" + outputs.size();
+            // Just in case the resultant name does clash with an operator name.
+            portName = builder().userSuppliedName(portName);
+        }
+        
+        final BOutputPort stream = new BOutputPort(this, outputs.size(),
+                portName,
+                schema);
+        assert !outputs.stream().anyMatch(output -> stream.name().equals(output.name()));
         outputs.add(stream);
         return stream;
     }
 
+    /**
+     * Each input port has a unique generated name to ensure connections
+     * are tracked correctly. However the port is not assigned
+     * that name during SPL generation, instead taking the name
+     * from its connected output stream (and the first if there
+     * are multiple). The port may also have an alias which
+     * will be used as the port alias (local to the operator).
+     */
     public BInputPort inputFrom(BOutput output, BInputPort input) {
         if (input != null) {
-            assert input.operator() == this.op;
+            assert input.operator() == this;
             assert inputs != null;
 
             output.connectTo(input);
@@ -259,71 +273,46 @@ public class BOperatorInvocation extends BOperator {
             inputs = new ArrayList<>();
         }
 
-        InputPortDeclaration inputPort = op.addInput(this.op.getName() + "_IN" + inputs.size(),
-                output.schema());
-        input = new BInputPort(this, inputPort);
+        input = new BInputPort(this, inputs.size(), output._type());
         inputs.add(input);
         output.connectTo(input);
 
         return input;
     }
+    
+    public JsonObject layout() {
+        return objectCreate(_json(), "layout");
+    }
+    
+    public BOperatorInvocation layoutKind(String kind) {
+        layout().addProperty(OpProperties.KIND, kind);
+        return this;
+    }
+
 
     @Override
-    public JSONObject complete() {
-        final JSONObject json = super.complete();
+    public JsonObject _complete() {
+        final JsonObject json = super._complete();
 
         if (outputs != null) {
-            JSONArray oa = new JSONArray(outputs.size());
-            for (BOutputPort output : outputs) {
-                oa.add(output.complete());
-            }
-            json.put("outputs", oa);
+            JsonArray oa = new JsonArray();
+            // outputs array in java is in port order.
+            for (int i = 0; i < outputs.size(); i++)
+                oa.add(JsonNull.INSTANCE); // will be overwritten with port info
+            for (BOutputPort output : outputs)
+                oa.set(output.index(), output._complete());
+            json.add("outputs", oa);
         }
 
         if (inputs != null) {
-            JSONArray ia = new JSONArray(inputs.size());
-            for (BInputPort input : inputs) {
-                ia.add(input.complete());
-            }
-            json.put("inputs", ia);
+            JsonArray ia = new JsonArray();
+            for (int i = 0; i < inputs.size(); i++)
+                ia.add(JsonNull.INSTANCE); // will be overwritten with port info
+            for (BInputPort input : inputs)
+                ia.set(input.index(), input._complete());
+            json.add("inputs", ia);
         }
 
         return json;
-    }
-
-    // Needed by the DependencyResolver to determine whether the operator
-    // has a 'jar' parameter by calling 
-    //
-    // op instance of FunctionFunctor
-    public OperatorInvocation<? extends Operator> op() {
-        return op;
-    }
-
-   
-    private static String getKind(Class<?> opClass) {
-        
-        PrimitiveOperator primitive = opClass.getAnnotation(PrimitiveOperator.class);
-        
-        final String kindName = primitive.name().length() == 0 ?
-                opClass.getSimpleName() : primitive.name();
-        
-        String namespace;
-        if (primitive.namespace().length() != 0)
-            namespace = primitive.namespace();
-        else {
-            Package pkg = opClass.getPackage();
-            if (pkg != null) {
-                Namespace ns = pkg.getAnnotation(Namespace.class);
-                if (ns == null)
-                    namespace = pkg.getName();
-                else
-                    namespace = ns.value();
-            }
-            else {
-                namespace = "";
-            }
-        }
-        
-        return namespace + "::" + kindName;
     }
 }

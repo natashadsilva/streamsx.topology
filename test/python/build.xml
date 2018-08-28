@@ -6,6 +6,8 @@
     </description>
 	
 	<property name="testtk" location="spl/testtkpy"/>
+	<property name="testtk_pip_op" location="spl/testtkpy_pip_op"/>
+	<property name="testtk_pip_tk" location="spl/testtkpy_pip_toolkit"/>
 	<property name="topology" location="topology"/>
         <property name="test.dir" location="unittests"/>
 
@@ -16,7 +18,7 @@
 
   <target name="test" depends="all,test.application.api,test.translation"/> 
 
-  <target name="all" depends="test.toolkit"/> 
+  <target name="all"> 
 	  <copy file="../../samples/python/com.ibm.streamsx.topology.pysamples/opt/python/streams/spl_samples.py"
 	  	toDir="${testtk}/opt/python/streams"/>
 	  <copy file="../../samples/python/com.ibm.streamsx.topology.pysamples/opt/python/streams/spl_kwargs.py"
@@ -25,18 +27,7 @@
 	  	toDir="${testtk}/opt/python/streams"/>
 	  <copy file="../../samples/python/com.ibm.streamsx.topology.pysamples/info.xml"
 	  	toDir="${testtk}"/>
-	  <target name="test.toolkit">
-		   <exec executable="${topology.test.python}" dir="${testtk}" failonerror="true">
-		     <arg value="${tk}/bin/spl-python-extract.py"/>
-		     <arg value="--directory"/>
-		     <arg value="${testtk}"/>
-		   </exec>
-	   <exec executable="${streams.install}/bin/spl-make-toolkit" failonerror="true">
-             <arg value="--make-operator"/>
-	     <arg value="-i"/>
-	     <arg value="${testtk}"/>
-	   </exec>
-	   </target>
+   </target>
 
 	  <target name="test.application.api">
              <mkdir dir="${test.dir}"/>

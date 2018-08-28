@@ -72,6 +72,49 @@
         <type>rstring</type>
         <cardinality>1</cardinality>
       </parameter>
+      <parameter>
+        <name>submissionParamNames</name>
+        <description>Submission parameter names</description>
+        <optional>true</optional>
+        <rewriteAllowed>true</rewriteAllowed>
+        <expressionMode>Constant</expressionMode>
+        <type>rstring</type>
+      </parameter>
+      <parameter>
+        <name>submissionParamValues</name>
+        <description>Submission parameter values</description>
+        <optional>true</optional>
+        <rewriteAllowed>true</rewriteAllowed>
+        <expressionMode>AttributeFree</expressionMode>
+        <type>rstring</type>
+      </parameter>
+      <parameter>
+        <name>outputConnections</name>
+        <description>Number of output connections.</description>
+        <optional>true</optional>
+        <rewriteAllowed>false</rewriteAllowed>
+        <expressionMode>Constant</expressionMode>
+        <type>int32</type>
+        <cardinality>1</cardinality>
+      </parameter>
+      <parameter>
+        <name>pyStyle</name>
+        <description>Style stream tuples are passed into Python.</description>
+        <optional>true</optional>
+        <rewriteAllowed>false</rewriteAllowed>
+        <expressionMode>Constant</expressionMode>
+        <type>rstring</type>
+        <cardinality>1</cardinality>
+      </parameter>
+      <parameter>
+       <name>pyStateful</name>
+        <description>Whether the operator has state to be saved in checkpointing.</description>
+        <optional>false</optional>
+        <rewriteAllowed>true</rewriteAllowed>
+        <expressionMode>Constant</expressionMode>
+        <type>boolean</type>
+        <cardinality>1</cardinality>
+      </parameter>
     </parameters>
     <inputPorts>
       <inputPortSet>
@@ -88,7 +131,7 @@
         <autoAssignment>false</autoAssignment>
         <completeAssignment>false</completeAssignment>
         <rewriteAllowed>false</rewriteAllowed>
-        <windowPunctuationOutputMode>Free</windowPunctuationOutputMode>
+        <windowPunctuationOutputMode>Preserving</windowPunctuationOutputMode>
         <tupleMutationAllowed>false</tupleMutationAllowed>
         <cardinality>1</cardinality>
         <optional>false</optional>

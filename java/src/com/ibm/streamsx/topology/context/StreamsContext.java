@@ -7,7 +7,7 @@ package com.ibm.streamsx.topology.context;
 import java.util.Map;
 import java.util.concurrent.Future;
 
-import com.ibm.json.java.JSONObject;
+import com.google.gson.JsonObject;
 import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.context.remote.RemoteContext;
 
@@ -69,13 +69,13 @@ public interface StreamsContext<T> {
          * Submission of the topology produces an Streams application bundle.
          * <P>
          * A bundle ({@code .sab} file) can be submitted to a Streaming Analytics
-         * service running on IBM Bluemix using:
+         * service running on IBM Cloud using:
          * <UL>
          * <LI> Streaming Analytics Console</LI>
          * <LI> Streaming Analytics REST API </LI>
          * </UL>
          * <BR>
-         * The {@link #ANALYTICS_SERVICE} context submits a topology directly to a
+         * The {@link #STREAMING_ANALYTICS_SERVICE} context submits a topology directly to a
          * Streaming Analytics service.
          * </P>
          * <P>
@@ -151,7 +151,7 @@ public interface StreamsContext<T> {
         STANDALONE,
 
         /**
-         * The topology is submitted to a Streams instance.
+         * The topology is submitted to an IBM Streams instance.
          * <P>
          * The returned type for the {@code submit} calls is
          * a {@code Future&lt;BigInteger>} where the value is
@@ -162,8 +162,19 @@ public interface StreamsContext<T> {
          * jobs are long running, consuming continuous streams of data.
          * </P>
          * <P>
-         * This initial implementation uses {@code streamtool} to submit and cancel jobs,
+         * The Streams instance the topology is submitted to is defined by
+         * the <b>required</b> environment variables {@code STREAMS_DOMAIN_ID} and
+         * {@code STREAMS_INSTANCE_ID}. {@code STREAMS_ZKCONNECT} must also be set for
+         * a non-basic instance, one not using embedded ZooKeeper.
+         * <BR>
+         * The user is set by the <em>optional</em> environment variable {@code STREAMS_USERNAME}
+         * defaulting to the current operator system user name. 
+         * </P>
+         * <P>
+         * {@code streamtool} is used to submit the job
          * and requires that {@code streamtool} does not prompt for authentication.
+         * This is achieved by using {@code streamtool genkey}.
+         * @see <a href="https://www.ibm.com/support/knowledgecenter/SSCRJU_4.2.1/com.ibm.streams.cfg.doc/doc/ibminfospherestreams-user-security-authentication-rsa.html">Generating authentication keys for IBM Streams</a>
          * </P>
          */
         DISTRIBUTED,
@@ -197,16 +208,28 @@ public interface StreamsContext<T> {
          * streams, sub-topologies, and, SPL primitive operators and composites.
          */
         DISTRIBUTED_TESTER,
-        
-        
+              
         /**
          * The topology is submitted to a Streams instance running
          * in Streaming Analytics service on
-         * <a href="http://www.ibm.com/Bluemix‎" target="_blank">IBM Bluemix</a>
+         * <a href="http://www.ibm.com/Bluemix" target="_blank">IBM Cloud</a>
+         * cloud platform.
+         * 
+         * <P>
+         * This is a synonym for {@link #STREAMING_ANALYTICS_SERVICE}.
+         * </P>
+         */
+        ANALYTICS_SERVICE,
+        
+
+        /**
+         * The topology is submitted to a Streams instance running
+         * in Streaming Analytics service on
+         * <a href="http://www.ibm.com/Bluemix" target="_blank">IBM Cloud</a>
          * cloud platform.
          * <P>
          * The returned type for the {@code submit} calls is
-         * a {@code Future&lt;BigInteger>} where the value is
+         * a {@code Future<BigInteger>} where the value is
          * the job identifier.
          * <BR>
          * When {@code submit} returns the {@code Future} will be complete,
@@ -223,20 +246,27 @@ public interface StreamsContext<T> {
          * <LI>Using the environment variable {@code VCAP_SERVICES}</LI>
          * </UL>
          * </P>
-         */
-        ANALYTICS_SERVICE,
-        
-        /**
-         * The topology is submitted to a Streams instance running
-         * in Streaming Analytics service on
-         * <a href="http://www.ibm.com/Bluemix‎" target="_blank">IBM Bluemix</a>
-         * cloud platform.
-         * 
          * <P>
-         * This is a synonym for {@link #ANALYTICS_SERVICE}.
-         * </P>
+         * If the environment variable {@code STREAMS_INSTALL} is set to a non-empty value
+         * then a Streams Application bundle ({@code sab} file) is created locally using
+         * the IBM Streams install and submitted to the service. This may be overridden
+         * by setting the context property {@link ContextProperties#FORCE_REMOTE_BUILD FORCE_REMOTE_BUILD}
+         * to {@code true}.
+         * <.P>
          */
         STREAMING_ANALYTICS_SERVICE,
+        
+        /**
+         * Testing variant of {@link #STREAMING_ANALYTICS_SERVICE}.
+         * <P>
+         * This context ignores any local IBM Streams install defined by the
+         * environment variable {@code STREAMS_INSTALL}, thus
+         * the Streams Application bundle ({@code sab} file) is created using
+         * the build service.
+         * </P>
+         * @since 1.7
+         */
+        STREAMING_ANALYTICS_SERVICE_TESTER,
         ;
     }
 
@@ -294,7 +324,7 @@ public interface StreamsContext<T> {
      * 
      * @see ContextProperties
      */
-    Future<T> submit(JSONObject submission) throws Exception;
+    Future<T> submit(JsonObject submission) throws Exception;
     
     String SUBMISSION_DEPLOY = RemoteContext.SUBMISSION_DEPLOY;
     String SUBMISSION_GRAPH = RemoteContext.SUBMISSION_GRAPH;

@@ -22,13 +22,15 @@ import com.ibm.streams.operator.model.Libraries;
 import com.ibm.streams.operator.model.Parameter;
 import com.ibm.streams.operator.model.PrimitiveOperator;
 import com.ibm.streams.operator.samples.patterns.TupleConsumer;
-import com.ibm.streamsx.topology.internal.tester.TCPTestClient;
-import com.ibm.streamsx.topology.internal.tester.TestTuple;
+import com.ibm.streamsx.topology.internal.tester.tcp.TCPTestClient;
+import com.ibm.streamsx.topology.internal.tester.tcp.TestTuple;
 
 @PrimitiveOperator
 @InputPortSet
 @Libraries("opt/apache-mina-2.0.2/dist/*")
 public class TesterSink extends TupleConsumer {
+    
+    public static final String KIND = "com.ibm.streamsx.topology.testing::TesterSink";
 
     private String host;
     private int port;

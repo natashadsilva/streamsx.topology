@@ -39,7 +39,8 @@ import com.ibm.streamsx.topology.spl.SPLStream;
  * is submitted to a tester {@link StreamsContext}, of type
  * {@link com.ibm.streamsx.topology.context.StreamsContext.Type#EMBEDDED_TESTER},
  * {@link com.ibm.streamsx.topology.context.StreamsContext.Type#STANDALONE_TESTER},
- * {@link com.ibm.streamsx.topology.context.StreamsContext.Type#DISTRIBUTED_TESTER}.
+ * {@link com.ibm.streamsx.topology.context.StreamsContext.Type#DISTRIBUTED_TESTER},
+ * {@link com.ibm.streamsx.topology.context.StreamsContext.Type#STREAMING_ANALYTICS_SERVICE_TESTER}.
  * </P>
  * <P>
  * When running a test using {@link com.ibm.streamsx.topology.context.StreamsContext.Type#STANDALONE_TESTER}
@@ -59,6 +60,12 @@ public interface Tester {
 
     /**
      * Adds {@code handler} to capture the output of {@code stream}.
+     * 
+     * <P>
+     * Not supported when testing using
+     * {@link com.ibm.streamsx.topology.context.StreamsContext.Type#STREAMING_ANALYTICS_SERVICE_TESTER STREAMING_ANALYTICS_SERVICE_TESTER}
+     * context.
+     * </P>
      * @param stream Stream to have its tuples captured.
      * @param handler {@code StreamHandler} to capture tuples.
      * @return {@code handler}
@@ -153,7 +160,35 @@ public interface Tester {
      */
     Condition<List<String>> stringContentsUnordered(TStream<String> stream, String... values);
     
+    /**
+     * Return a condition that evaluates if every tuple on {@code stream}
+     * evaluates to {@code true} with {@code tester}.
+     * 
+     * @param stream Stream to be tested.
+     * @param tester Predicate that will be executed against each tuple.
+     * @return Condition whose result is the first tuple to fail the condition
+     * (when the result is available).
+     */
     Condition<String> stringTupleTester(TStream<String> stream, Predicate<String> tester);
+    
+    /**
+     * Create a condition that randomly resets consistent regions.
+     * 
+     * The condition becomes valid when each consistent region in
+     * the application under test has been reset {@code minimumResets} times
+     * by the tester.
+     * <P>
+     * A region is reset by initiating a request though the Job Control Plane.
+     * The reset is <B>not</B> driven by any injected failure, such as a PE restart.
+     * </P>
+     * @param minimumResets - Minimum number of resets for each region, defaults to 10.
+     * @return Condition with no result object.
+     * 
+     * @throws IllegalArgumentException {@code minimumResets} less than zero.
+     * 
+     * @since 1.9 Only supported for Streaming Analytics.
+     */
+    Condition<Void> resetConsistentRegions(Integer minimumResets);
     
     /**
      * Submit the topology for this tester and wait for it to complete.

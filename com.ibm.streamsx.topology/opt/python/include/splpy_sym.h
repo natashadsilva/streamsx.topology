@@ -22,7 +22,6 @@
 
 #include <stdexcept>
 #include "Python.h"
-#include "splpy_ec_api.h"
 
 /**
  * For a Python C API function symbol PyXXX we create
@@ -71,10 +70,14 @@ typedef double (*__splpy_d_p_fp)(PyObject *);
 
 typedef PyGILState_STATE (*__splpy_gil_v_fp)(void);
 typedef void (*__splpy_v_gil_fp)(PyGILState_STATE);
+typedef PyThreadState * (*__splpy_ts_v_fp)(void);
+typedef void (*__splpy_v_ts_fp)(PyThreadState *);
 
 extern "C" {
   static __splpy_gil_v_fp __spl_fp_PyGILState_Ensure;
   static __splpy_v_gil_fp __spl_fp_PyGILState_Release;
+  static __splpy_ts_v_fp __spl_fp_PyEval_SaveThread;
+  static __splpy_v_ts_fp __spl_fp_PyEval_RestoreThread;
 
   static PyGILState_STATE __spl_fi_PyGILState_Ensure() {
      return __spl_fp_PyGILState_Ensure();
@@ -82,9 +85,18 @@ extern "C" {
   static void __spl_fi_PyGILState_Release(PyGILState_STATE state) {
      __spl_fp_PyGILState_Release(state);
   }
+  static PyThreadState * __spl_fi_PyEval_SaveThread() {
+     return __spl_fp_PyEval_SaveThread();
+  }
+  static void __spl_fi_PyEval_RestoreThread(PyThreadState * state) {
+     __spl_fp_PyEval_RestoreThread(state);
+  }
+
 };
 #pragma weak PyGILState_Ensure = __spl_fi_PyGILState_Ensure
 #pragma weak PyGILState_Release = __spl_fi_PyGILState_Release
+#pragma weak PyEval_SaveThread = __spl_fi_PyEval_SaveThread
+#pragma weak PyEval_RestoreThread = __spl_fi_PyEval_RestoreThread
 
 /*
  * String handling
@@ -143,48 +155,64 @@ extern "C" {
 
 #else
 typedef int (*__splpy_sasas_fp)(PyObject *, char **, Py_ssize_t *);
-typedef PyObject * (*__splpy_bfm_fp)(void *, Py_ssize_t);
+typedef PyObject * (*__splpy_mvfb_fp)(Py_buffer *);
+typedef int (*__splpy_bfi_fp)(Py_buffer *, PyObject *, void *, Py_ssize_t, int, int);
 extern "C" {
   static __splpy_sasas_fp __spl_fp_PyString_AsStringAndSize;
-  static __splpy_bfm_fp __spl_fp_PyBuffer_FromMemory;
+  static __splpy_mvfb_fp __spl_fp_PyMemoryView_FromBuffer;
+  static __splpy_bfi_fp __spl_fp_PyBuffer_FillInfo;
   static int __spl_fi_PyString_AsStringAndSize(PyObject * o, char ** buf, Py_ssize_t *size) {
      return __spl_fp_PyString_AsStringAndSize(o, buf, size);
   }
-  static PyObject * __spl_fi_PyBuffer_FromMemory(void *mem, Py_ssize_t size) {
-     return __spl_fp_PyBuffer_FromMemory(mem, size);
+  static PyObject * __spl_fi_PyMemoryView_FromBuffer(Py_buffer *buf) {
+     return __spl_fp_PyMemoryView_FromBuffer(buf);
+  }
+  static int __spl_fi_PyBuffer_FillInfo(Py_buffer *view, PyObject *o, void *buf, Py_ssize_t len, int readonly, int flags) {
+     return __spl_fp_PyBuffer_FillInfo(view, o, buf, len, readonly, flags);
   }
 }
 #pragma weak PyString_AsStringAndSize = __spl_fi_PyString_AsStringAndSize
-#pragma weak PyBuffer_FromMemory = __spl_fi_PyBuffer_FromMemory
+#pragma weak PyMemoryView_FromBuffer = __spl_fi_PyMemoryView_FromBuffer
+#pragma weak PyBuffer_FillInfo = __spl_fi_PyBuffer_FillInfo
 #endif
-
 
 /*
  * Loading modules, running code
  */
 
 typedef PyObject* (*__splpy_ogas_fp)(PyObject *, const char *);
+typedef int (*__splpy_ohas_fp)(PyObject *, const char *);
 typedef int (*__splpy_rssf_fp)(const char *, PyCompilerFlags *);
-#if __SPLPY_EC_MODULE_OK
+#if PY_MAJOR_VERSION == 3
 typedef PyObject* (*__splpy_mc2_fp)(PyModuleDef *, int);
 typedef int (*__splpy_sam_fp)(PyObject *, PyModuleDef *);
+#endif
+#if PY_MAJOR_VERSION == 2
+typedef PyObject * (*__splpy_im4_fp)(const char *, PyMethodDef *, const char *doc, PyObject *self, int);
 #endif
 
 extern "C" {
   static __splpy_ogas_fp __spl_fp_PyObject_GetAttrString;
+  static __splpy_ohas_fp __spl_fp_PyObject_HasAttrString;
   static __splpy_rssf_fp __spl_fp_PyRun_SimpleStringFlags;
   static __splpy_p_ppp_fp __spl_fp_PyObject_Call;
   static __splpy_p_pp_fp __spl_fp_PyObject_CallObject;
   static __splpy_i_p_fp __spl_fp_PyCallable_Check;
   static __splpy_p_p_fp __spl_fp_PyImport_Import;
 
-#if __SPLPY_EC_MODULE_OK
+#if PY_MAJOR_VERSION == 3
   static __splpy_mc2_fp __spl_fp_PyModule_Create2;
   static __splpy_sam_fp __spl_fp_PyState_AddModule;
+#endif
+#if PY_MAJOR_VERSION == 2
+  static __splpy_im4_fp __spl_fp_Py_InitModule4 ;
 #endif
 
   static PyObject * __spl_fi_PyObject_GetAttrString(PyObject *o, const char * attr_name) {
      return __spl_fp_PyObject_GetAttrString(o, attr_name);
+  }
+  static int __spl_fi_PyObject_HasAttrString(PyObject *o, const char * attr_name) {
+     return __spl_fp_PyObject_HasAttrString(o, attr_name);
   }
   static int __spl_fi_PyRun_SimpleStringFlags(const char * command, PyCompilerFlags *flags) {
      return __spl_fp_PyRun_SimpleStringFlags(command, flags);
@@ -202,7 +230,7 @@ extern "C" {
      return __spl_fp_PyImport_Import(name);
   }
 
-#if __SPLPY_EC_MODULE_OK
+#if PY_MAJOR_VERSION == 3
   static PyObject * __spl_fi_PyModule_Create2(PyModuleDef *module, int apivers) {
      return __spl_fp_PyModule_Create2(module, apivers);
   }
@@ -210,17 +238,27 @@ extern "C" {
      return __spl_fp_PyState_AddModule(module, def);
   }
 #endif
+#if PY_MAJOR_VERSION == 2
+  static PyObject * __spl_fi_Py_InitModule4(const char *name, PyMethodDef *methods, const char *doc, PyObject *self, int apiver) {
+     return __spl_fp_Py_InitModule4(name, methods, doc, self, apiver);
+  }
+#endif
 }
 #pragma weak PyObject_GetAttrString = __spl_fi_PyObject_GetAttrString
+#pragma weak PyObject_HasAttrString = __spl_fi_PyObject_HasAttrString
 #pragma weak PyRun_SimpleStringFlags = __spl_fi_PyRun_SimpleStringFlags
 #pragma weak PyObject_Call = __spl_fi_PyObject_Call
 #pragma weak PyObject_CallObject = __spl_fi_PyObject_CallObject
 #pragma weak PyCallable_Check = __spl_fi_PyCallable_Check
 #pragma weak PyImport_Import = __spl_fi_PyImport_Import
 
-#if __SPLPY_EC_MODULE_OK
+#if PY_MAJOR_VERSION == 3
 #pragma weak PyModule_Create2 = __spl_fi_PyModule_Create2
 #pragma weak PyState_AddModule = __spl_fi_PyState_AddModule
+#endif
+#if PY_MAJOR_VERSION == 2
+#pragma weak Py_InitModule4_64 = __spl_fi_Py_InitModule4
+#pragma weak Py_InitModule4TraceRefs_64 = __spl_fi_Py_InitModule4
 #endif
 
 /*
@@ -233,7 +271,9 @@ extern "C" {
   static __splpy_p_s_fp __spl_fp_PyTuple_New;
   static __splpy_p_p_fp __spl_fp_PyIter_Next;
   static __splpy_v_p_fp __spl_fp_PyDict_New;
+  static __splpy_s_p_fp __spl_fp_PyDict_Size;
   static __splpy_i_ppp_fp __spl_fp_PyDict_SetItem;
+  static __splpy_p_pp_fp __spl_fp_PyDict_GetItem;
   static __splpy_dn_fp __spl_fp_PyDict_Next;
   static __splpy_p_s_fp __spl_fp_PyList_New;
   static __splpy_s_p_fp __spl_fp_PyList_Size;
@@ -251,8 +291,14 @@ extern "C" {
   static PyObject * __spl_fi_PyDict_New() {
      return __spl_fp_PyDict_New();
   }
+  static Py_ssize_t __spl_fi_PyDict_Size(PyObject *d) {
+     return __spl_fp_PyDict_Size(d);
+  }
   static int __spl_fi_PyDict_SetItem(PyObject *d, PyObject *k, PyObject *v) {
      return __spl_fp_PyDict_SetItem(d, k, v);
+  }
+  static PyObject * __spl_fi_PyDict_GetItem(PyObject *d, PyObject *k) {
+     return __spl_fp_PyDict_GetItem(d, k);
   }
   static int __spl_fi_PyDict_Next(PyObject *d, Py_ssize_t *o,PyObject **k, PyObject **v) {
      return __spl_fp_PyDict_Next(d, o, k, v);
@@ -279,7 +325,9 @@ extern "C" {
 #pragma weak PyTuple_New = __spl_fi_PyTuple_New
 #pragma weak PyIter_Next = __spl_fi_PyIter_Next
 #pragma weak PyDict_New = __spl_fi_PyDict_New
+#pragma weak PyDict_Size = __spl_fi_PyDict_Size
 #pragma weak PyDict_SetItem = __spl_fi_PyDict_SetItem
+#pragma weak PyDict_GetItem = __spl_fi_PyDict_GetItem
 #pragma weak PyDict_Next = __spl_fi_PyDict_Next
 #pragma weak PyList_New = __spl_fi_PyList_New
 #pragma weak PyList_Size = __spl_fi_PyList_Size
@@ -419,6 +467,10 @@ extern "C" {
 
 #define __SPLFIX(_NAME, _TYPE) __SPLFIX_EX( __spl_fp_##_NAME, #_NAME, _TYPE ) 
 
+#define __SPL_STRINGIFY(_X) #_X
+
+#define __SPL_TOSTRING(_X) __SPL_STRINGIFY(_X)
+
 namespace streamsx {
   namespace topology {
 
@@ -428,6 +480,8 @@ class SplpySym {
 
      __SPLFIX(PyGILState_Ensure, __splpy_gil_v_fp);
      __SPLFIX(PyGILState_Release, __splpy_v_gil_fp);
+     __SPLFIX(PyEval_SaveThread, __splpy_ts_v_fp);
+     __SPLFIX(PyEval_RestoreThread, __splpy_v_ts_fp);
 
      __SPLFIX(PyObject_Str, __splpy_p_p_fp);
 
@@ -446,25 +500,32 @@ class SplpySym {
      __SPLFIX(PyMemoryView_FromMemory, __splpy_mvfm_fp);
 #else
      __SPLFIX(PyString_AsStringAndSize, __splpy_sasas_fp);
-     __SPLFIX(PyBuffer_FromMemory, __splpy_bfm_fp);
+     __SPLFIX(PyMemoryView_FromBuffer, __splpy_mvfb_fp);
+     __SPLFIX(PyBuffer_FillInfo, __splpy_bfi_fp);
 #endif
 
      __SPLFIX(PyObject_GetAttrString, __splpy_ogas_fp);
+     __SPLFIX(PyObject_HasAttrString, __splpy_ohas_fp);
      __SPLFIX(PyRun_SimpleStringFlags, __splpy_rssf_fp);
      __SPLFIX(PyObject_Call, __splpy_p_ppp_fp);
      __SPLFIX(PyObject_CallObject, __splpy_p_pp_fp);
      __SPLFIX(PyCallable_Check, __splpy_i_p_fp);
      __SPLFIX(PyImport_Import, __splpy_p_p_fp);
 
-#if __SPLPY_EC_MODULE_OK
+#if PY_MAJOR_VERSION == 3
      __SPLFIX(PyModule_Create2, __splpy_mc2_fp);
      __SPLFIX(PyState_AddModule, __splpy_sam_fp);
+#endif
+#if PY_MAJOR_VERSION == 2
+     __SPLFIX_EX(__spl_fp_Py_InitModule4, __SPL_TOSTRING(Py_InitModule4), __splpy_im4_fp);
 #endif
  
      __SPLFIX(PyTuple_New, __splpy_p_s_fp);
      __SPLFIX(PyIter_Next, __splpy_p_p_fp);
      __SPLFIX(PyDict_New, __splpy_v_p_fp);
+     __SPLFIX(PyDict_Size, __splpy_s_p_fp);
      __SPLFIX(PyDict_SetItem, __splpy_i_ppp_fp);
+     __SPLFIX(PyDict_GetItem, __splpy_p_pp_fp);
      __SPLFIX(PyDict_Next, __splpy_dn_fp);
      __SPLFIX(PyList_New, __splpy_p_s_fp);
      __SPLFIX(PyList_Size, __splpy_s_p_fp);

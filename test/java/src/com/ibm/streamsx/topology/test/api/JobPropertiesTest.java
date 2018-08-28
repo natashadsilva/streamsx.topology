@@ -33,9 +33,9 @@ import com.ibm.streams.operator.samples.patterns.ProcessTupleProducer;
 import com.ibm.streamsx.topology.TStream;
 import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.context.JobProperties;
-import com.ibm.streamsx.topology.context.StreamsContext;
-import com.ibm.streamsx.topology.internal.spljava.Schemas;
+import com.ibm.streamsx.topology.internal.streams.Util;
 import com.ibm.streamsx.topology.spl.JavaPrimitive;
+import com.ibm.streamsx.topology.spl.SPLSchemas;
 import com.ibm.streamsx.topology.spl.SPLStream;
 import com.ibm.streamsx.topology.test.TestTopology;
 import com.ibm.streamsx.topology.tester.Condition;
@@ -49,8 +49,10 @@ public class JobPropertiesTest extends TestTopology {
 
     @Test
     public void testNameProperty() throws Exception {
+        assumeTrue(!isStreamingAnalyticsRun()); // Result not available on SAS
+        
         List<String> result = testItDirect("testNameProperty", JobProperties.NAME,
-                "JobPropertiesTestJobName");
+                "JobPropertiesTestJobName").getResult();
         
         assertFalse(result.get(0).isEmpty()); // job id
         assertEquals("JobPropertiesTestJobName", result.get(1));
@@ -60,9 +62,11 @@ public class JobPropertiesTest extends TestTopology {
 
     @Test
     public void testGroupPropertyDefault() throws Exception {
+        assumeTrue(!isStreamingAnalyticsRun()); // Result not available on SAS
+        
         List<String> result = testItDirect("testGroupProperty", JobProperties.GROUP,
                 // lame, but otherwise need a real pre-existing non-default one.
-                "default");
+                "default").getResult();
         assertFalse(result.get(0).isEmpty()); // job id
         assertFalse(result.get(1).isEmpty()); // job name
         assertEquals("default", result.get(2)); // job group
@@ -71,12 +75,14 @@ public class JobPropertiesTest extends TestTopology {
 
     @Test
     public void testGroupPropertyNonDefault() throws Exception {
+        assumeTrue(!isStreamingAnalyticsRun()); // Result not available on SAS
+        
         // NOT a real API EV... though perhaps should be.
         // Must name a pre-existing job group.
         // Skip the test if it's not set.
         String group = System.getenv("STREAMSX_TOPOLOGY_DEFAULT_JOB_GROUP");
         assumeNotNull(group);
-        List<String> result = testItDirect("testGroupProperty", JobProperties.GROUP, group);
+        List<String> result = testItDirect("testGroupProperty", JobProperties.GROUP, group).getResult();
         assertFalse(result.get(0).isEmpty()); // job id
         assertFalse(result.get(1).isEmpty()); // job name
         assertEquals(group, result.get(2)); // job group
@@ -85,14 +91,16 @@ public class JobPropertiesTest extends TestTopology {
 
     @Test(expected=Exception.class)
     public void testGroupPropertyNeg() throws Exception {
-        testItDirect("testGroupProperty", JobProperties.GROUP,
+        testItDirect("testGroupPropertyNeg", JobProperties.GROUP,
                 "myJobGroup-"+((long)(Math.random() + 10000)));
     }
 
     @Test
     public void testDataDirectoryProperty() throws Exception {
+        assumeTrue(!isStreamingAnalyticsRun()); // Result not available on SAS
+        
         List<String> result = testItDirect("testDataDirectoryProperty", JobProperties.DATA_DIRECTORY,
-                "/no/such/path");
+                "/no/such/path").getResult();
         
         assertFalse(result.get(0).isEmpty()); // job id
         assertFalse(result.get(1).isEmpty()); // job name
@@ -102,47 +110,42 @@ public class JobPropertiesTest extends TestTopology {
 
     @Test
     public void testOverrideResourceLoadProtectionProperty() throws Exception {
+        assumeTrue(!isStreamingAnalyticsRun()); // Permission error on SAS
         testIt("testOverrideResourceLoadProtectionProperty",
                 JobProperties.OVERRIDE_RESOURCE_LOAD_PROTECTION, true);
     }
-
-    @Test
-    public void testPreloadApplicationBundlesProperty() throws Exception {
-        checkMaximumVersion("preload passed as job config in 4.2", 4, 1);
-        
-        testIt("testPreloadApplicationBundlesProperty",
-                JobProperties.PRELOAD_APPLICATION_BUNDLES, true);
-    }
     
-    private List<String> testItDirect(String topologyName, String propName, Object value)
+    private Condition<List<String>> testItDirect(String topologyName, String propName, Object value)
             throws Exception {
+        // Primitive op has direct dependency on Java Operator API
+        assumeTrue(hasStreamsInstall());
 
         // JobProperties only apply to DISTRIBUTED submit
-        assumeTrue(getTesterType() == StreamsContext.Type.DISTRIBUTED_TESTER);
-        assumeTrue(SC_OK);
+        assumeTrue(isDistributedOrService());
         
         getConfig().put(propName, value);
 
         Topology topology = newTopology(topologyName);
         topology.addClassDependency(JobPropertiesTestOp.class);
         SPLStream sourceSPL = JavaPrimitive.invokeJavaPrimitiveSource(topology, JobPropertiesTestOp.class,
-                Schemas.STRING, null);
+                SPLSchemas.STRING, null);
         TStream<String> source = sourceSPL.toStringStream();
 
         Condition<Long> end = topology.getTester().tupleCount(source, 4);
         Condition<List<String>> result = topology.getTester().stringContents(source);
         complete(topology.getTester(), end, 10, TimeUnit.SECONDS);
-        
-        return result.getResult();
+        return result;
     }
     
     
     private void testIt(String topologyName, String propName, Object value)
             throws Exception {
+        
+        // tests by running streamtool submitjob
+        assumeTrue(hasStreamsInstall());
 
         // JobProperties only apply to DISTRIBUTED submit
-        assumeTrue(getTesterType() == StreamsContext.Type.DISTRIBUTED_TESTER);
-        assumeTrue(SC_OK);
+        assumeTrue(isDistributedOrService());
         
         // Full verification of the override or preload properties isn't practical
         // or really necessary for our API.  Streams doesn't provide any way to
@@ -275,7 +278,7 @@ public class JobPropertiesTest extends TestTopology {
         }
         
         public static ApiLog setup() {
-            Logger logger = Topology.STREAMS_LOGGER;
+            Logger logger = Util.STREAMS_LOGGER;
             Level origLevel = logger.getLevel();
             if (origLevel==null || !logger.isLoggable(Level.INFO))
                 logger.setLevel(Level.INFO);
@@ -285,11 +288,11 @@ public class JobPropertiesTest extends TestTopology {
         }
         
         public Logger getLogger() {
-            return Topology.STREAMS_LOGGER;
+            return Util.STREAMS_LOGGER;
         }
         
         public void cleanup() {
-            Logger logger = Topology.STREAMS_LOGGER;
+            Logger logger = Util.STREAMS_LOGGER;
             logger.removeHandler(this);
             logger.setLevel(origLevel);
         }

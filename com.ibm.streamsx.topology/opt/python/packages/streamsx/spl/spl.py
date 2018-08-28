@@ -2,32 +2,38 @@
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2015,2017
 """
+SPL Python primitive operators.
+
+********
 Overview
-========
+********
+
 SPL primitive operators that call a Python function or
-callable class are created by decorators provided by this module.
+class methods are created by decorators provided by this module.
 
 The name of the function or callable class becomes the name of the
 operator.
 
-.. warning::
-    Operator names must be valid SPL identifers,
-    SPL identifiers start with an ASCII letter or underscore,
-    followed by ASCII letters, digits, or underscores.
-    The name also must not be a SPL keyword.
-
 Once created the operators become part of a toolkit and may be used
 like any other SPL operator.
 
-Decorating a Python class creates a stateful SPL operator. The instance fields of the class are the state for the operator. Any parameters to the
-`__init__` method (exluding the first `self` parameter) are mapped to
-operator parameters.
+A decorated function is a stateless operator while a decorated class
+is an optionally stateful operator.
 
+These are the supported decorators that create an SPL operator:
+
+    * :py:class:`@spl.source <source>` - Creates a source operator that produces tuples.
+    * :py:class:`@spl.filter <filter>` - Creates a operator that filters tuples.
+    * :py:class:`@spl.map <map>` - Creates a operator that maps input tuples to output tuples.
+    * :py:class:`@spl.for_each <for_each>` - Creates a operator that terminates a stream processing each tuple.
+    * :py:class:`@spl.primitive_operator <primitive_operator>` - Creates an SPL primitive operator that has an arbitrary number of input and output ports.
+
+*******************************
 Python classes as SPL operators
-===============================
+*******************************
 
 Overview
---------
+========
 
 Decorating a Python class creates a stateful SPL operator
 where the instance fields of the class are the operator's state. An instance
@@ -48,7 +54,7 @@ are not supported.
     Parameter names must be valid SPL identifers,
     SPL identifiers start with an ASCII letter or underscore,
     followed by ASCII letters, digits, or underscores.
-    The name also must not be a SPL keyword.
+    The name also must not be an SPL keyword.
 
     Parameter names ``suppress`` and ``include`` are reserved.
 
@@ -60,7 +66,7 @@ For example, with this decorated class producing an SPL source
 operator::
 
     @spl.source()
-    class Range:
+    class Range(object):
       def __init__(self, stop, start=0):
         self.start = start
         self.stop = stop
@@ -94,7 +100,7 @@ or both operator parameters can be set::
     }
 
 Operator state
---------------
+==============
 
 Use of a class allows the operator to be stateful by maintaining state in instance
 attributes across invocations (tuple processing).
@@ -104,7 +110,7 @@ attributes across invocations (tuple processing).
     state can be pickled. See https://docs.python.org/3.5/library/pickle.html#handling-stateful-objects
 
 Operator initialization & shutdown
-----------------------------------
+==================================
 
 Execution of an instance for an operator effectively run in a context manager so that an instance's ``__enter__``
 method is called when the processing element containing the operator is initialized
@@ -119,7 +125,7 @@ Example of using ``__enter__`` and ``__exit__`` to open and close a file::
 
     import streamsx.ec as ec
 
-    @spp.map()
+    @spl.map()
     class Sentiment(object):
         def __init__(self, name):
             self.name = name
@@ -132,15 +138,34 @@ Example of using ``__enter__`` and ``__exit__`` to open and close a file::
             if self.file is not None:
                 self.file.close()
 
+        def __call__(self):
+            pass
 
+When an instance defines a valid ``__exit__`` method then it will be called with an exception when:
+
+ * the instance raises an exception during processing of a tuple
+ * a data conversion exception is raised converting a Python value to an SPL tuple or attribute
+
+If ``__exit__`` returns a true value then the exception is suppressed and processing continues, otherwise the enclosing processing element will be terminated.
+
+Application log and trace
+=========================
+
+IBM Streams provides application trace and log services which are
+accesible through standard Python loggers from the `logging` module.
+
+See :ref:`streams_app_log_trc`.
+
+*********************************
 Python functions as SPL operators
-=================================
+*********************************
+
 Decorating a Python function creates a stateless SPL operator.
 In SPL terms this is similar to an SPL Custom operator, where
 the code in the Python function is the custom code. For
 operators with input ports the function is called for each
 input tuple, passing a Python representation of the SPL input tuple.
-For a SPL source operator the function is called to obtain an iterable
+For an SPL source operator the function is called to obtain an iterable
 whose contents will be submitted to the output stream as SPL tuples.
 
 Operator parameters are not supported.
@@ -149,26 +174,27 @@ An example SPL sink operator that prints each input SPL tuple after
 its conversion to a Python tuple::
 
     @spl.for_each()
-    def PrintTuple(*tuple):
+    def PrintTuple(*tuple_):
         "Print each tuple to standard out."
-         print(tuple, flush=True)
+         print(tuple_, flush=True)
 
 .. _spl-tuple-to-python:
 
+*******************************
 Processing SPL tuples in Python
-===============================
+*******************************
 
 SPL tuples are converted to Python objects and passed to a decorated callable.
 
 Overview
---------
+========
 
 For each SPL tuple arriving at an input port a Python function is called with
 the SPL tuple converted to Python values suitable for the function call.
 How the tuple is passed is defined by the tuple passing style.
 
 Tuple Passing Styles
---------------------
+====================
 
 An input tuple can be passed to Python function using a number of different styles:
  * *dictionary*
@@ -177,7 +203,7 @@ An input tuple can be passed to Python function using a number of different styl
  * *attributes by position*
 
 Dictionary
-++++++++++
+----------
 
 Passing the SPL tuple as a Python dictionary is flexible
 and makes the operator independent of any schema.
@@ -188,13 +214,13 @@ If the function is general purpose and can derive meaning
 from the keys that are the attribute names then ``**kwargs`` can be useful.
 
 When the only function parameter is ``**kwargs``
-(e.g. ``def myfunc(**tuple):``) then the passing style is *dictionary*.
+(e.g. ``def myfunc(**tuple_):``) then the passing style is *dictionary*.
 
 All of the attributes are passed in the dictionary
 using the SPL schema attribute name as the key.
 
 Tuple
-+++++
+-----
 
 Passing the SPL tuple as a Python tuple is flexible
 and makes the operator independent of any schema
@@ -205,13 +231,13 @@ However if the function is general purpose and independent
 of the tuple contents ``*args`` can be useful.
 
 When the only function parameter is ``*args``
-(e.g. ``def myfunc(*tuple):``) then the passing style is *tuple*.
+(e.g. ``def myfunc(*tuple_):``) then the passing style is *tuple*.
 
 All of the attributes are passed as a Python tuple
 with the order of values matching the order of the SPL schema.
 
 Attributes by name
-++++++++++++++++++
+------------------
 (**not yet implemented**)
 
 Passing attributes by name can be robust against changes
@@ -238,7 +264,7 @@ If there are only formal parameters any non-bound attributes
 are not passed into the function.
 
 Attributes by position
-++++++++++++++++++++++
+----------------------
 
 Passing attributes by position allows the SPL operator to
 be independent of the SPL schema but is brittle to
@@ -266,16 +292,17 @@ The SPL schema must have at least the number of positional arguments
 the function requires.
 
 Selecting the style
-+++++++++++++++++++
+===================
 
 For signatures only containing a parameter of the form 
 ``*args`` or ``**kwargs`` the style is implicitly defined:
 
- * ``def f(**tuple)`` - *dictionary* - ``tuple`` will contain a dictionary of all of the SPL tuple attribute's values with the keys being the attribute names.
- * ``def f(*tuple)`` - *tuple* - ``tuple`` will contain all of the SPL tuple attribute's values in order of the SPL schema definition.
+ * ``def f(**tuple_)`` - *dictionary* - ``tuple_`` will contain a dictionary of all of the SPL tuple attribute's values with the keys being the attribute names.
+ * ``def f(*tuple_)`` - *tuple* - ``tuple_`` will contain all of the SPL tuple attribute's values in order of the SPL schema definition.
 
 Otherwise the style is set by the ``style`` parameter to the decorator,
 defaulting to *attributes by name*. The style value can be set to:
+
   * ``'name'`` - *attributes by name* (the default)
   * ``'position'`` - *attributes by position*
 
@@ -284,9 +311,9 @@ defaulting to *attributes by name*. The style value can be set to:
 They do not support the ``style`` parameter.
 
 Examples
-++++++++
+========
 
-These examples how a SPL tuple with the schema and value::
+These examples show how an SPL tuple with the schema and value::
 
     tuple<rstring id, float64 temp, boolean increase>
     {id='battery', temp=23.7, increase=true}
@@ -297,18 +324,18 @@ call and the resulting values of the function's parameters.
 *Dictionary* consuming all attributes by ``**kwargs``::
 
     @spl.map()
-    def f(**tuple)
+    def f(**tuple_)
         pass
     # f({'id':'battery', 'temp':23.7, 'increase': True})
-    #     tuple={'id':'battery', 'temp':23.7, 'increase':True}
+    #     tuple_={'id':'battery', 'temp':23.7, 'increase':True}
 
 *Tuple* consuming all attributes by ``*args``::
 
     @spl.map()
-    def f(*tuple)
+    def f(*tuple_)
         pass
     # f('battery', 23.7, True)
-    #     tuple=('battery',23.7, True)
+    #     tuple_=('battery',23.7, True)
 
 *Attributes by name* consuming all attributes::
 
@@ -341,20 +368,20 @@ call and the resulting values of the function's parameters.
 *Attributes by name* consuming `id` by name and remaining attributes by ``**kwargs``::
 
     @spl.map()
-    def f(id, **tuple)
+    def f(id, **tuple_)
         pass
     # f(id='battery', {'temp':23.7, 'increase':True})
     #    id='battery'
-    #    tuple={'temp':23.7, 'increase':True}
+    #    tuple_={'temp':23.7, 'increase':True}
 
 *Attributes by name* consuming `id` by name and remaining attributes by ``*args``::
 
     @spl.map()
-    def f(id, *tuple)
+    def f(id, *tuple_)
         pass
     # f(id='battery', 23.7, True)
     #    id='battery'
-    #    tuple=(23.7, True)
+    #    tuple_=(23.7, True)
 
 *Attributes by position* consuming all attributes::
 
@@ -378,15 +405,15 @@ call and the resulting values of the function's parameters.
 *Attributes by position* consuming `id` by position and remaining attributes by ``*args``::
 
     @spl.map(style='position')
-    def f(key, *tuple)
+    def f(key, *tuple_)
         pass
     # f('battery', 23.7, True)
     #    key='battery'
-    #    tuple=(23.7, True)
+    #    tuple_=(23.7, True)
 
 In all cases the SPL tuple must be able to provide all parameters
 required by the function. If the SPL schema is insufficient then
-an error will result, typically a SPL compile time error.
+an error will result, typically an SPL compile time error.
 
 The SPL schema can provide a subset of the formal parameters if the
 remaining attributes are optional (having a default).
@@ -403,8 +430,9 @@ remaining attributes are optional (having a default).
 
 .. _submit-from-python:
 
+************************************
 Submission of SPL tuples from Python
-------------------------------------
+************************************
 
 The return from a decorated callable results in submission of SPL tuples
 on the associated outut port.
@@ -416,13 +444,13 @@ A Python function must return:
  * a list containing any of the above.
 
 None
-++++
+====
 
 When ``None`` is return then no tuple will be submitted to
 the operator output port.
 
 Python tuple
-++++++++++++
+============
 
 When a Python tuple is returned it is converted to an SPL tuple and
 submitted to the output port.
@@ -433,7 +461,7 @@ in the SPL tuple::
 
     # SPL input schema: tuple<int32 x, float64 y>
     # SPL output schema: tuple<int32 x, float64 y, float32 z>
-    @spl.pipe
+    @spl.map(style='position')
     def myfunc(a,b):
        return (a,b,a+b)
 
@@ -445,12 +473,16 @@ in the SPL tuple::
     # z is set to: x+y
 
 The returned tuple may be *sparse*, any attribute value in the tuple
-that is ``None`` will be set to their SPL default or copied from the
-input tuple, depending on the operator kind::
+that is ``None`` will be set to their SPL default or copied from
+a matching attribute in the input tuple
+(same name and type,
+or same name and same type as the underlying type of an output attribute
+with an optional type),
+depending on the operator kind::
     
-    # SPL input schema: tuple<int32 x, float64 x>
+    # SPL input schema: tuple<int32 x, float64 y>
     # SPL output schema: tuple<int32 x, float64 y, float32 z>
-    @spl.pipe
+    @spl.map(style='position')
     def myfunc(a,b):
        return (a,None,a+b)
 
@@ -459,14 +491,18 @@ input tuple, depending on the operator kind::
     # y is set to: y (set by matching input SPL attribute)
     # z is set to: x+y
 
-When a returned tuple has less values than attributes in the SPL output
+When a returned tuple has fewer values than attributes in the SPL output
 schema the attributes not set by the Python function will be set
-to their SPL default or copied from the input tuple, depending on
-the operator kind::
+to their SPL default or copied from
+a matching attribute in the input tuple
+(same name and type,
+or same name and same type as the underlying type of an output attribute
+with an optional type),
+depending on the operator kind::
     
-    # SPL input schema: tuple<int32 x, float64 x>
+    # SPL input schema: tuple<int32 x, float64 y>
     # SPL output schema: tuple<int32 x, float64 y, float32 z>
-    @spl.pipe
+    @spl.map(style='position')
     def myfunc(a,b):
        return a,
 
@@ -477,9 +513,9 @@ the operator kind::
 
 When a returned tuple has more values than attributes in the SPL output schema then the additional values are ignored::
 
-    # SPL input schema: tuple<int32 x, float64 x>
+    # SPL input schema: tuple<int32 x, float64 y>
     # SPL output schema: tuple<int32 x, float64 y, float32 z>
-    @spl.pipe
+    @spl.map(style='position')
     def myfunc(a,b):
        return (a,b,a+b,a/b)
 
@@ -493,22 +529,28 @@ When a returned tuple has more values than attributes in the SPL output schema t
     # The fourth value in the tuple a/b = x/y is ignored.
 
 Python dictionary
-+++++++++++++++++
-A Python dictionary is converted to a SPL tuple for submission to
+=================
+
+A Python dictionary is converted to an SPL tuple for submission to
 the associated output port. An SPL attribute is set from the
 dictionary if the dictionary contains a key equal to the attribute
-name. The value is used to set the attribute, unless the attribute is
+name. The value is used to set the attribute, unless the value is
 ``None``.
 
-If the value in the dictionary is ``None`` or no matching key exists
-then the attribute value is set fom the input tuple or to its
-default value depending on the operator kind.
+If the value in the dictionary is ``None``, or no matching key exists,
+then the attribute value is set to its SPL default or copied from
+a matching attribute in the input tuple
+(same name and type,
+or same name and same type as the underlying type of an output attribute
+with an optional type),
+depending on the operator kind::
 
 Any keys in the dictionary that do not map to SPL attribute names are ignored.
     
 Python list
-+++++++++++
-When a list returned, each value is converted to an SPL tuple and
+===========
+
+When a list is returned, each value is converted to an SPL tuple and
 submitted to the output port, in order of the list starting with the
 first element (position 0). If the list contains `None` at an index
 then no SPL tuple is submitted for that index.
@@ -517,38 +559,50 @@ The list must only contain Python tuples, dictionaries or `None`. The list
 can contain a mix of valid values.
 
 The list may be empty resulting in no tuples being submitted.
+
 """
 
+from future.builtins import *
 from enum import Enum
 import functools
 import inspect
 import re
 import sys
 import streamsx.ec as ec
+import importlib
 
 ############################################
 # setup for function inspection
 if sys.version_info.major == 3:
   _inspect = inspect
-#elif sys.version_info.major == 2:
-#  import funcsigs
-#  _inspect = funcsigs
+elif sys.version_info.major == 2:
+  import funcsigs
+  _inspect = funcsigs
 else:
   raise ValueError("Python version not supported.")
 ############################################
 
-_OperatorType = Enum('_OperatorType', 'Ignore Source Sink Pipe Filter')
+# Used to recreate instances of decorated operators
+# from their module & class name during pickleling (dill)
+# See __reduce__ implementation below
+def _recreate_op(op_module, op_name):
+    module_ = importlib.import_module(op_module)
+    class_ = getattr(module_, op_name)
+    return class_.__new__(class_)
+
+_OperatorType = Enum('_OperatorType', 'Ignore Source Sink Pipe Filter Primitive')
 _OperatorType.Source.spl_template = 'PythonFunctionSource'
 _OperatorType.Pipe.spl_template = 'PythonFunctionPipe'
 _OperatorType.Sink.spl_template = 'PythonFunctionSink'
 _OperatorType.Filter.spl_template = 'PythonFunctionFilter'
+_OperatorType.Primitive.spl_template = 'PythonPrimitive'
 
 _SPL_KEYWORDS = {'graph', 'stream', 'public', 'composite', 'input', 'output', 'type', 'config', 'logic',
                  'window', 'param', 'onTuple', 'onPunct', 'onProcess', 'state', 'stateful', 'mutable',
                  'if', 'for', 'while', 'break', 'continue', 'return', 'attribute', 'function', 'operator'}
 
 def _valid_identifier(id):
-    if re.fullmatch('[a-zA-Z_][a-zA-Z_0-9]*', id) is None or id in _SPL_KEYWORDS:
+    if re.match('^[a-zA-Z_][a-zA-Z_0-9]*$', id) is None or id in _SPL_KEYWORDS:
         raise ValueError("{0} is not a valid SPL identifier".format(id))
 
 def _valid_op_parameter(name):
@@ -558,7 +612,7 @@ def _valid_op_parameter(name):
 
 def pipe(wrapped):
     """
-    Decorator to create a SPL operator from a function.
+    Decorator to create an SPL operator from a function.
     
     A pipe SPL operator with a single input port and a single
     output port. For each tuple on the input port the
@@ -566,10 +620,12 @@ def pipe(wrapped):
 
     SPL attributes from the tuple are passed by position.
     
-    The value returned from the function defines what is
-    submitted to the output port. If None is returned then
-    nothing is submitted. If a tuple is returned then it
-    is c
+    The value returned from the function results in
+    zero or more tuples being submitted to the operator output
+    port, see :ref:`submit-from-python`.
+
+    .. deprecated:: 1.8
+        Recommended to use :py:class:`@spl.map <map>` instead.
     """
     if not inspect.isfunction(wrapped):
         raise TypeError('A function is required')
@@ -588,50 +644,65 @@ def _wrapforsplop(optype, wrapped, style, docpy):
 
         _valid_identifier(wrapped.__name__)
 
-        class _op_class(object):
-
+        class _op_class(wrapped):
             __doc__ = wrapped.__doc__
+
+            _splpy_wrapped = wrapped
+            _splpy_optype = optype
+            _splpy_callable = 'class'
+
             @functools.wraps(wrapped.__init__)
             def __init__(self,*args,**kwargs):
-                self.__splpy_instance = wrapped(*args,**kwargs)
+                super(_op_class, self).__init__(*args,**kwargs)
                 if ec._is_supported():
-                    ec._save_opc(self.__splpy_instance)
-                ec._callable_enter(self.__splpy_instance)
+                    ec._save_opc(self)
+                ec._callable_enter(self)
 
-            if hasattr(wrapped, "__call__"):
-                @functools.wraps(wrapped.__call__)
-                def __call__(self, *args,**kwargs):
-                    return self.__splpy_instance.__call__(*args, **kwargs)
+            # Use reduce to save the state of the class and its
+            # module and operator name.
+            def __reduce__(self):
+                if hasattr(self, '__getstate__'):
+                    state = self.__getstate__()
+                else:
+                    state = self.__dict__
+                return _recreate_op, (wrapped.__module__, wrapped.__name__), state
 
-            if hasattr(wrapped, "__iter__"):
-                @functools.wraps(wrapped.__iter__)
-                def __iter__(self):
-                    return self.__splpy_instance.__iter__()
+            def _splpy_shutdown(self, exc_type=None, exc_value=None, traceback=None):
+                return ec._callable_exit(self, exc_type, exc_value, traceback)
 
-            def _shutdown(self):
-                ec._callable_exit_clean(self.__splpy_instance)
-
-        _op_class.__wrapped__ = wrapped
-        # _op_class.__doc__ = wrapped.__doc__
-        _op_class.__splpy_optype = optype
-        _op_class.__splpy_callable = 'class'
-        _op_class.__splpy_style = _define_style(wrapped, wrapped.__call__, style)
-        _op_class.__splpy_file = inspect.getsourcefile(wrapped)
-        _op_class.__splpy_docpy = docpy
+        if optype in (_OperatorType.Sink, _OperatorType.Pipe, _OperatorType.Filter):
+            _op_class._splpy_style = _define_style(wrapped, wrapped.__call__, style)
+            _op_class._splpy_fixed_count = _define_fixed(_op_class, _op_class.__call__)
+        else:
+            _op_class._splpy_style = ''
+            _op_class._splpy_fixed_count = -1
+     
+        _op_class._splpy_file = inspect.getsourcefile(wrapped)
+        _op_class._splpy_docpy = docpy
         return _op_class
     if not inspect.isfunction(wrapped):
         raise TypeError('A function or callable class is required')
 
     _valid_identifier(wrapped.__name__)
 
-    @functools.wraps(wrapped)
-    def _op_fn(*args, **kwargs):
-        return wrapped(*args, **kwargs)
-    _op_fn.__splpy_optype = optype
-    _op_fn.__splpy_callable = 'function'
-    _op_fn.__splpy_style = _define_style(wrapped, wrapped, style)
-    _op_fn.__splpy_file = inspect.getsourcefile(wrapped)
-    _op_fn.__splpy_docpy = docpy
+    #fnstyle =
+
+    #if fnstyle == 'tuple':
+    #    @functools.wraps(wrapped)
+    #    def _op_fn(*args):
+    #        return wrapped(args)
+    #else:
+    #    @functools.wraps(wrapped)
+    #    def _op_fn(*args, **kwargs):
+    #       return wrapped(*args, **kwargs)
+    _op_fn = wrapped
+
+    _op_fn._splpy_optype = optype
+    _op_fn._splpy_callable = 'function'
+    _op_fn._splpy_style = _define_style(_op_fn, _op_fn, style)
+    _op_fn._splpy_fixed_count = _define_fixed(_op_fn, _op_fn)
+    _op_fn._splpy_file = inspect.getsourcefile(wrapped)
+    _op_fn._splpy_docpy = docpy
     return _op_fn
 
 # define the SPL tuple passing style based
@@ -706,7 +777,32 @@ def _define_style(wrapped, fn, style):
          raise TypeError("Not yet implemented!")
     return style
 
-class source:
+def _define_fixed(wrapped, callable_):
+    """For the callable see how many positional parameters are required"""
+    is_class = inspect.isclass(wrapped)
+    style = callable_._splpy_style if hasattr(callable_, '_splpy_style') else wrapped._splpy_style
+
+    fixed_count = 0
+    if style == 'tuple':
+        sig = _inspect.signature(callable_)
+        pmds = sig.parameters
+        itpmds = iter(pmds)
+        # Skip 'self' for classes
+        if is_class:
+            next(itpmds)
+
+        for pn in itpmds:
+            param = pmds[pn]
+            if param.kind == _inspect.Parameter.POSITIONAL_OR_KEYWORD:
+                fixed_count += 1
+            if param.kind == _inspect.Parameter.VAR_POSITIONAL: # *args
+                fixed_count = -1
+                break
+            if param.kind == _inspect.Parameter.VAR_KEYWORD:
+                break
+    return fixed_count
+
+class source(object):
     """
     Create a source SPL operator from an iterable.
     The resulting SPL operator has a single output port.
@@ -723,15 +819,53 @@ class source:
     where ``value`` is the return of the function.
 
     For each value in the iteration SPL zero or more tuples
-    are submitted to the output port, dervied from the value,
+    are submitted to the output port, derived from the value,
     see :ref:`submit-from-python`.
     
     If the iteration completes then no more tuples
     are submitted and a final punctuation mark
     is submitted to the output port.
 
+    Example definition::
+
+        @spl.source()
+        class Range(object):
+            def __init__(self, stop, start=0):
+                self.start = start
+                self.stop = stop
+
+            def __iter__(self):
+                return zip(range(self.start, self.stop))
+
+    Example SPL invocation::
+
+        stream<int32 seq> R = Range() {
+            param
+                stop: 100;
+        }
+
     Args:
        docpy: Copy Python docstrings into SPL operator model for SPLDOC.
+
+    Exceptions raised by ``__iter__`` and ``__next__`` can be suppressed
+    when this decorator wraps a class with context manager
+    ``__enter__`` and ``__exit__`` methods.
+
+    If ``__exit__`` returns a true value when called with an exception 
+    then the exception is suppressed.
+
+    Suppressing an exception raised by ``__iter__`` results in the
+    source producing an empty iteration. No tuples will be submitted.
+
+    Suppressing an exception raised by ``__next__`` results in the
+    source not producing any tuples for that invocation. Processing
+    continues with a call to ``__next__``.
+
+    Data conversion errors of the value returned by ``__next__`` can
+    also be suppressed by ``__exit__``.
+    If ``__exit__`` returns a true value when called with the exception 
+    then the exception is suppressed and the value that caused the
+    exception is not submitted as an SPL tuple.
     """
     def __init__(self, docpy=True):
         self.style = None
@@ -740,7 +874,7 @@ class source:
     def __call__(self, wrapped):
         return _wrapforsplop(_OperatorType.Source, wrapped, self.style, self.docpy)
 
-class map:
+class map(object):
     """
     Decorator to create a map SPL operator from a callable class or function.
 
@@ -752,9 +886,38 @@ class map:
     zero or more tuples being submitted to the operator output
     port, see :ref:`submit-from-python`.
 
+    Example definition::
+
+        @spl.map()
+        class AddSeq(object):
+        \"\"\"Add a sequence number as the last attribute.\"\"\"
+        def __init__(self):
+            self.seq = 0
+
+        def __call__(self, *tuple_):
+            id = self.seq
+            self.seq += 1
+            return tuple_ + (id,)
+
+    Example SPL invocation::
+
+        stream<In, tuple<uint64 seq>> InWithSeq = AddSeq(In) { }
+
     Args:
        style: How the SPL tuple is passed into Python callable or function, see  :ref:`spl-tuple-to-python`.
        docpy: Copy Python docstrings into SPL operator model for SPLDOC.
+
+    Exceptions raised by ``__call__`` can be suppressed when this decorator
+    wraps a class with context manager ``__enter__`` and ``__exit__`` methods.
+    If ``__exit__`` returns a true value when called with the exception 
+    then the exception is suppressed and the tuple that caused the
+    exception is dropped.
+
+    Data conversion errors of the value returned by ``__call__`` can
+    also be suppressed by ``__exit__``.
+    If ``__exit__`` returns a true value when called with the exception 
+    then the exception is suppressed and the value that caused the
+    exception is not submitted as an SPL tuple.
     """
     def __init__(self, style=None, docpy=True):
         self.style = style
@@ -789,11 +952,11 @@ class filter(object):
             above a threshold.
             \"\"\"
             def __init__(self, attr, threshold):
-                self.attr = threshold
+                self.attr = attr
                 self.threshold = threshold
                 
-            def __call__(self, **tuple):
-                return tuple[self.attr] > self.threshold:
+            def __call__(self, **tuple_):
+                return tuple_[self.attr] > self.threshold:
 
     Example SPL invocation::
 
@@ -803,6 +966,12 @@ class filter(object):
               attr: "voltage";
               threshold: 225.0;
         }
+
+    Exceptions raised by ``__call__`` can be suppressed when this decorator
+    wraps a class with context manager ``__enter__`` and ``__exit__`` methods.
+    If ``__exit__`` returns a true value when called with the exception 
+    then the expression is suppressed and the tuple that caused the
+    exception is dropped.
     """
     def __init__(self, style=None, docpy=True):
         self.style = style
@@ -824,29 +993,55 @@ def ignore(wrapped):
     @functools.wraps(wrapped)
     def _ignore(*args, **kwargs):
         return wrapped(*args, **kwargs)
-    _ignore.__splpy_optype = _OperatorType.Ignore
-    _ignore.__splpy_file = inspect.getsourcefile(wrapped)
+    _ignore._splpy_optype = _OperatorType.Ignore
+    _ignore._splpy_file = inspect.getsourcefile(wrapped)
     return _ignore
 
 # Defines a function as a sink operator
 def sink(wrapped):
+    """Creates an SPL operator with a single input port.
+
+    A SPL operator with a single input port and no output ports.
+    For each tuple on the input port the decorated function
+    is called passing the contents of the tuple.
+
+    .. deprecated:: 1.8
+        Recommended to use :py:class:`@spl.for_each <for_each>` instead.
+    """
     if not inspect.isfunction(wrapped):
         raise TypeError('A function is required')
 
     return _wrapforsplop(_OperatorType.Sink, wrapped, 'position', False)
 
 # Defines a function as a sink operator
-class for_each:
+class for_each(object):
     """
-    Decorator that creates an SPL operator from a callable class or function.
+    Creates an SPL operator with a single input port.
 
     A SPL operator with a single input port and no output ports.
     For each tuple on the input port the decorated callable
     is called passing the contents of the tuple.
 
+    Example definition::
+
+        @spl.for_each()
+        def PrintTuple(*tuple_):
+        \"\"\"Print each tuple to standard out.\"\"\"
+            print(tuple_, flush=True)
+
+    Example SPL invocation::
+
+        () as PT = PrintTuple(SensorReadings) { }
+
     Args:
-       style: How the SPL tuple is passed into Python callable or function, see  :ref:`spl-tuple-to-python`.
+       style: How the SPL tuple is passed into Python callable, see  :ref:`spl-tuple-to-python`.
        docpy: Copy Python docstrings into SPL operator model for SPLDOC.
+
+    Exceptions raised by ``__call__`` can be suppressed when this decorator
+    wraps a class with context manager ``__enter__`` and ``__exit__`` methods.
+    If ``__exit__`` returns a true value when called with the exception 
+    then the expression is suppressed and the tuple that caused the
+    exception is ignored.
     """
     def __init__(self, style=None, docpy=True):
         self.style = style
@@ -854,3 +1049,218 @@ class for_each:
 
     def __call__(self, wrapped):
         return _wrapforsplop(_OperatorType.Sink, wrapped, self.style, self.docpy)
+
+class PrimitiveOperator(object):
+    """Primitive operator super class.
+    Classes decorated with `@spl.primitive_operator` must extend
+    this class if they have one or more output ports. This class
+    provides the `submit` method to submit tuples to specified
+    otuput port.
+
+    .. versionadded:: 1.8
+    """
+    def submit(self, port_id, tuple_):
+        """Submit a tuple to the output port.
+
+        The value to be submitted (``tuple_``) can be a ``None`` (nothing will be submitted),
+        ``tuple``, ``dict` or ``list`` of those types. For details
+        on how the ``tuple_`` is mapped to an SPL tuple see :ref:`submit-from-python`.
+
+        Args:
+             port_id: Identifier of the port specified in the
+                  ``output_ports`` parameter of the ``@spl.primitive_operator``
+                  decorator.
+             tuple_: Tuple (or tuples) to be submitted to the output port.
+        """
+        port_index = self._splpy_output_ports[port_id]
+        ec._submit(self, port_index, tuple_)
+
+    def all_ports_ready(self):
+        """Notifcation that the operator can submit tuples.
+
+        Called when the primitive operator can submit tuples
+        using :py:meth:`submit`. An operator must not submit
+        tuples until this method is called or until a port
+        processing method is called.
+
+        Any implementation must not block. A typical use
+        is to start threads that submit tuples.
+
+        An implementation must return a value that allows
+        the SPL runtime to determine when an operator completes.
+        An operator completes, and finalizes its output ports
+        when:
+
+            * All input ports (if any) have been finalized.
+            * All background processing is complete.
+
+        The return from ``all_ports_ready`` defines when
+        background processing, such as threads started by
+        ``all_ports_ready``, is complete. The value is one of:
+
+            * A value that evaluates to `False` - No background processing exists.
+            * A value that evaluates to `True` - Background processing exists and never completes. E.g. a source operator that processes real time events.
+            * A callable - Background processing is complete when the callable returns. The SPL runtime invokes the callable once (passing no arguments) when the method returns background processing is assumed to be complete.
+
+        For example if an implementation starts a single thread then `Thread.join` is returned to complete the operator when the thread completes::
+
+            def all_ports_ready(self):
+                submitter = threading.Thread(target=self._find_and_submit_data)
+                submitter.start()
+                return submitter.join
+
+            def _find_and_submit_data(self):
+                ...
+
+        Returns:
+            Value indicating active background processing.
+        
+
+        This method implementation does nothing and returns ``None``.
+        """
+        return None
+
+
+class input_port(object):
+    """Declare an input port and its processor method.
+
+    Instance methods within a class decorated by
+    :py:class:`spl.primitive_operator <primitive_operator>` declare
+    input ports by decorating methods with this decorator.
+
+    Each tuple arriving on the input port will result in a call
+    to the processor method passing the stream tuple converted to
+    a Python representation depending on the style. The style is
+    determined by the method signature or the `style` parameter,
+    see  :ref:`spl-tuple-to-python`.
+
+    The order of the methods within the class define
+    the order of the ports, so the first port is
+    the first method decorated with `input_port`.
+
+    Args:
+        style: How the SPL tuple is passed into the method, see  :ref:`spl-tuple-to-python`.
+
+    .. versionadded:: 1.8
+    """
+    _count = 0
+    def __init__(self, style=None):
+        self._style = style
+
+    def __call__(self, wrapped):
+        wrapped._splpy_input_port_seq = input_port._count
+        wrapped._splpy_input_port_config = self
+        wrapped._splpy_style = self._style
+        input_port._count += 1
+        return wrapped
+
+
+class primitive_operator(object):
+    """Creates an SPL primitive operator with an arbitrary number of input ports and
+    output ports.
+
+    Input ports are declared by decorating an instance method
+    with :py:meth:`input_port`. The method is the process method
+    for the input port and is called for each tuple that arrives
+    at the port. The order of the decorated process methods defines
+    the order of the ports in the SPL operator, with the first
+    process method being the first port at index zero.
+
+    Output ports are declared by the ``output_ports`` parameter which
+    is set to a ``list`` of port identifiers. The port identifiers are
+    arbitrary but must be hashable. Port identifiers allow the ability
+    to submit tuples "logically' rather than through a port index. Typically
+    a port identifier will be a `str` or an `enum`. The size of the list
+    defines the number of output ports with the first identifier in the list
+    coresponding to the first output port of the operator at index zero.
+    If the list is empty or not set then the operator has no output ports.
+
+    Tuples are submitted to an output port using :py:meth:`~PrimitiveOperator.submit`.
+
+    When an operator has output ports it must be a sub-class of
+    :py:class:`PrimitiveOperator` which provides the
+    :py:meth:`~PrimitiveOperator.submit` method and the ports
+    ready notification mechanism :py:meth:`~PrimitiveOperator.all_ports_ready`.
+
+    Example definition of an operator with a single input port and two output ports::
+
+        @spl.primitive_operator(output_ports=['MATCH', 'NEAR_MATCH'])
+        class SelectCustomers(spl.PrimitiveOperator):
+            \"\"\" Score customers using a model.
+            Customers that are a good match are submitted to port 0 ('MATCH')
+            while customers that are a near match are submitted to port 1 ('NEAR_MATCH').
+
+            Customers that are not a good or near match are not submitted to any port.
+            \"\"\"
+            def __init__(self, match, near_match):
+                self.match = match
+                self.near_match = near_match
+
+            @spl.input_port()
+            def customers(self, **tuple_):
+                 customer_score = self.score(tuple_)
+                 if customer_score >= self.match:
+                     self.submit('MATCH', tuple_)
+                 elif customer_score >= self.near_match:
+                     self.submit('NEAR_MATCH', tuple_)
+
+            def score(self, **customer):
+                # Actual model scoring omitted
+                score = ...
+                return score
+
+    Example SPL invocation::
+
+        (stream<Customers> MakeOffer; stream<Customers> ImproveOffer>) = SelectCustomers(Customers) {
+            param
+                match: 0.9;
+                near_match: 0.8;
+        }
+
+
+    Args:
+       output_ports(list): List of identifiers for output ports.
+       docpy: Copy Python docstrings into SPL operator model for SPLDOC.
+
+    .. versionadded:: 1.8
+    """
+
+    def __init__(self, output_ports=None,docpy=True):
+        self._docpy = docpy
+        self._output_ports = output_ports
+
+    def __call__(self, wrapped):
+        if not inspect.isclass(wrapped):
+            raise TypeError('A class is required:' + str(wrapped))
+
+        _valid_identifier(wrapped.__name__)
+
+        cls = _wrapforsplop(_OperatorType.Primitive, wrapped, None, self._docpy)
+
+        inputs = dict()
+        for fname, fn in inspect.getmembers(wrapped):
+            if hasattr(fn, '_splpy_input_port_seq'):
+                if sys.version_info.major == 2:
+                    fn = fn.__func__
+                inputs[fn._splpy_input_port_seq] = fn
+
+        cls._splpy_input_ports = []
+        cls._splpy_style = []
+        cls._splpy_fixed_count = []
+        for seq in sorted(inputs.keys()):
+            fn = inputs[seq]
+            fn._splpy_input_port_id = len(cls._splpy_input_ports)
+            fn._splpy_style = _define_style(wrapped, fn, fn._splpy_style)
+            fn._splpy_fixed_count = _define_fixed(cls, fn)
+
+            cls._splpy_input_ports.append(fn)
+            cls._splpy_style.append(fn._splpy_style)
+            cls._splpy_fixed_count.append(fn._splpy_fixed_count)
+
+        cls._splpy_output_ports = dict()
+        if self._output_ports:
+            for i in range(len(self._output_ports)):
+                cls._splpy_output_ports[self._output_ports[i]] = i
+
+        return cls
+

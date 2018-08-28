@@ -78,7 +78,7 @@ public class BeaconTest extends TestTopology {
 
     @Test
     public void testFixedCount() throws Exception {
-        Topology topology = new Topology("testFixedCount");
+        Topology topology = newTopology("testFixedCount");
 
         final int count = new Random().nextInt(1000) + 37;
 
@@ -94,7 +94,7 @@ public class BeaconTest extends TestTopology {
 
     @Test
     public void testLongFixedCount() throws Exception {
-        Topology topology = new Topology("testLongFixedCount");
+        Topology topology = newTopology("testLongFixedCount");
 
         final int count = 7;
 
@@ -112,7 +112,7 @@ public class BeaconTest extends TestTopology {
     
     @Test
     public void testForeverBeacon() throws Exception {
-        Topology topology = new Topology("testForeverBeacon");
+        Topology topology = newTopology("testForeverBeacon");
 
         final int count = new Random().nextInt(1000) + 37;
 
@@ -126,10 +126,13 @@ public class BeaconTest extends TestTopology {
     
     @Test
     public void testBeaconTuples() throws Exception {
-        Topology topology = new Topology("testFixedCount");
+        
+        // Uses IBM JSON4J
+        assumeTrue(hasStreamsInstall());       
 
         final int count = new Random().nextInt(1000) + 37;
 
+        Topology topology = newTopology();
         TStream<BeaconTuple> beacon = BeaconStreams.beacon(topology, count);
         TStream<JSONObject> json = JSONStreams.toJSON(beacon);
         TStream<String> strings = JSONStreams.serialize(json);
@@ -137,6 +140,15 @@ public class BeaconTest extends TestTopology {
         Tester tester = topology.getTester();
         Condition<Long> expectedCount = tester.tupleCount(strings, count);
         
+        Condition<String> contents = createPredicate(strings, tester);
+
+        complete(tester, expectedCount, 20, TimeUnit.SECONDS);
+
+        assertTrue(expectedCount.valid());
+        assertTrue(contents.toString(), contents.valid());
+    }
+
+    private static Condition<String> createPredicate(TStream<String> strings, Tester tester) {
         @SuppressWarnings("serial")
         Condition<String> contents = tester.stringTupleTester(strings, new Predicate<String>() {
             
@@ -170,19 +182,13 @@ public class BeaconTest extends TestTopology {
                 lastTuple = bt;
                 return ok;
             }});
-
-        complete(tester, expectedCount, 20, TimeUnit.SECONDS);
-
-        assertTrue(expectedCount.valid());
-        assertTrue(contents.toString(), contents.valid());
-        
-        
+        return contents;
     }
     
     @Test
     public void testBeaconTypes() {
         assumeTrue(isMainRun());
-        Topology t = new Topology();
+        Topology t = newTopology();
         assertEquals(BeaconTuple.class, BeaconStreams.beacon(t).getTupleClass());
         assertEquals(BeaconTuple.class, BeaconStreams.beacon(t, 77).getTupleClass());
         

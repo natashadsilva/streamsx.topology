@@ -4,34 +4,50 @@
  */
 package com.ibm.streamsx.topology.spl;
 
+import static com.ibm.streams.operator.Type.Factory.getStreamSchema;
+import static java.util.Objects.requireNonNull;
+
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.lang.reflect.Type;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import com.ibm.json.java.JSONObject;
 import com.ibm.streams.operator.StreamSchema;
 import com.ibm.streams.operator.Tuple;
 import com.ibm.streams.operator.encoding.CharacterEncoding;
-import com.ibm.streams.operator.encoding.EncodingFactory;
 import com.ibm.streamsx.topology.TStream;
 import com.ibm.streamsx.topology.TopologyElement;
 import com.ibm.streamsx.topology.builder.BOperatorInvocation;
 import com.ibm.streamsx.topology.builder.BOutput;
 import com.ibm.streamsx.topology.consistent.ConsistentRegionConfig;
+import com.ibm.streamsx.topology.context.Placeable;
 import com.ibm.streamsx.topology.function.Function;
 import com.ibm.streamsx.topology.function.Predicate;
 import com.ibm.streamsx.topology.function.Supplier;
 import com.ibm.streamsx.topology.function.UnaryOperator;
 import com.ibm.streamsx.topology.internal.core.StreamImpl;
-import com.ibm.streamsx.topology.internal.spljava.Schemas;
+import com.ibm.streamsx.topology.internal.json4j.JSONTopoRuntime;
+import com.ibm.streamsx.topology.internal.messages.Messages;
 import com.ibm.streamsx.topology.json.JSONSchemas;
-import com.ibm.streamsx.topology.json.JSONStreams.DeserializeJSON;
 
 class SPLStreamImpl extends StreamImpl<Tuple> implements SPLStream {
 
-    public SPLStreamImpl(TopologyElement te, BOutput stream) {
-        super(te, stream, Tuple.class);
+    private final StreamSchema schema;
+    
+    static SPLStream newSPLStream(TopologyElement te, BOperatorInvocation op, StreamSchema schema,
+            boolean singleOutput) {
+        return new SPLStreamImpl(te, schema,
+                op.addOutput(schema.getLanguageType(),
+                        singleOutput ? Optional.of(op.name()) : Optional.empty()));
+    }
+    
+    private SPLStreamImpl(TopologyElement te, StreamSchema schema, BOutput stream) {
+        super(te, stream, Tuple.class, Optional.empty());
+        this.schema = schema;
     }
 
     @Override
@@ -41,39 +57,14 @@ class SPLStreamImpl extends StreamImpl<Tuple> implements SPLStream {
 
     @Override
     public StreamSchema getSchema() {
-        return output().schema();
+        return schema;
     }
 
     @Override
     public TStream<JSONObject> toJSON() {
         return transform(
                 JSONSchemas.JSON.equals(getSchema()) ?
-                        new JsonString2JSON() : new Tuple2JSON());
-    }
-
-    public static class Tuple2JSON implements Function<Tuple, JSONObject> {
-        private static final long serialVersionUID = 1L;
-
-        @Override
-        public JSONObject apply(Tuple tuple) {
-            return EncodingFactory
-                    .getJSONEncoding().encodeTuple(tuple);
-        }
-    }
-    
-    /**
-     * Deserialize from tuple<rstring jsonString>
-     *
-     */
-    public static class JsonString2JSON implements Function<Tuple, JSONObject> {
-        private static final long serialVersionUID = 1L;
-        
-        private final DeserializeJSON deserializer = new DeserializeJSON();
-
-        @Override
-        public JSONObject apply(Tuple tuple) {
-            return deserializer.apply(tuple.getString(0));
-        }
+                        new JSONTopoRuntime.JsonString2JSON() : new JSONTopoRuntime.Tuple2JSON());
     }
 
     @Override
@@ -88,7 +79,7 @@ class SPLStreamImpl extends StreamImpl<Tuple> implements SPLStream {
 
     @Override
     public TStream<String> toStringStream() {
-        if (!Schemas.STRING.equals(getSchema()))
+        if (!SPLSchemas.STRING.equals(getSchema()))
             throw new IllegalStateException(getSchema().getLanguageType());
 
         return new StreamImpl<String>(this, output(), String.class);
@@ -138,10 +129,10 @@ class SPLStreamImpl extends StreamImpl<Tuple> implements SPLStream {
     }
     
     protected SPLStream addMatchingOutput(BOperatorInvocation bop, Type tupleType) {
-        return new SPLStreamImpl(this, bop.addOutput(getSchema())); 
+        return new SPLStreamImpl(this, schema, bop.addOutput(getSchema().getLanguageType())); 
     }
     protected SPLStream addMatchingStream(BOutput output) {
-        return new SPLStreamImpl(this, output);
+        return new SPLStreamImpl(this, getStreamSchema(output._type()), output);
     }
     
     @Override
@@ -149,25 +140,53 @@ class SPLStreamImpl extends StreamImpl<Tuple> implements SPLStream {
         return asSPL(super.parallel(width));
     }
     
+    @Override 
+    public SPLStream setParallel(Supplier<Integer> width){
+    	return asSPL(super.setParallel(width));
+    }
+    
     @Override
     public SPLStream parallel(Supplier<Integer> width,
             com.ibm.streamsx.topology.TStream.Routing routing) {
-        if(routing != TStream.Routing.ROUND_ROBIN){
-            throw new IllegalArgumentException("Partitioning is not currently "
-                    + "supported with SPLStream.");
+        
+        switch (requireNonNull(routing)) {
+        case ROUND_ROBIN:
+        case BROADCAST:
+            break;
+        default:
+            throw new IllegalArgumentException(Messages.getString("SPL_PARTITIONING_NOT_SUPPORTED"));
         }
+
         return asSPL(super.parallel(width, routing));
     }
     @Override
     public SPLStream parallel(Supplier<Integer> width,
             Function<Tuple, ?> keyer) {
-        throw new IllegalArgumentException("Partitioning is not currently "
-                + "supported with SPLStream.");
+        throw new IllegalArgumentException(Messages.getString("SPL_PARTITIONING_NOT_SUPPORTED"));
     }
     
     @Override
     public SPLStream endParallel() {
         return asSPL(super.endParallel());
+    }
+    
+    @Override
+    protected void _publish(Object topic, boolean allowFilter) {
+        
+        Map<String,Object> publishParms = new HashMap<>();
+        publishParms.put("topic", topic);
+        publishParms.put("allowFilter", allowFilter);
+        
+        SPL.invokeSink("com.ibm.streamsx.topology.topic::Publish", this, publishParms);
+    }
+    
+    @Override
+    public SPLStream colocate(Placeable<?>... elements) {
+        return asSPL(super.colocate(elements));
+    }
+    @Override
+    public SPLStream invocationName(String name) {
+        return asSPL(super.invocationName(name));
     }
 
     public static class TupleToString implements Function<Tuple, String> {

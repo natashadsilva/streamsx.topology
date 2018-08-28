@@ -13,8 +13,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.Test;
 import org.junit.Ignore;
+import org.junit.Test;
 
 import com.ibm.json.java.JSONArray;
 import com.ibm.json.java.JSONObject;
@@ -165,14 +165,7 @@ public class WindowTest extends TestTopology {
 
         TStream<StockPrice> source = f.constants(Arrays.asList(PRICES)).asType(StockPrice.class);        
 
-        TStream<StockPrice> aggregate = source.last(2).key(new Function<StockPrice,String>() {
-
-            private static final long serialVersionUID = 1L;
-
-            @Override
-            public String apply(StockPrice v) {
-                return v.getKey();
-            }}).aggregate(new AveragePrice());
+        TStream<StockPrice> aggregate = source.last(2).key(StockPrice::getKey).aggregate(new AveragePrice());
         
         return aggregate;
     }
@@ -231,6 +224,10 @@ public class WindowTest extends TestTopology {
      */
     @Test
     public void testContinuousAggregateLastSeconds() throws Exception {
+        // Uses JSON4J
+        assumeTrue(hasStreamsInstall());
+        assumeTrue(!isStreamingAnalyticsRun()); // TODO: Uses Condition.getResult()
+        
         final Topology t = newTopology();
         TStream<String> source = t.periodicSource(new PeriodicStrings(), 100, TimeUnit.MILLISECONDS);
         
@@ -278,6 +275,9 @@ public class WindowTest extends TestTopology {
      */
     @Test
     public void testPeriodicAggregateLastSeconds() throws Exception {
+        // Uses Condition.getResult
+        assumeTrue(!isStreamingAnalyticsRun());
+        
         final Topology t = newTopology();
         TStream<String> source = t.periodicSource(new PeriodicStrings(), 100, TimeUnit.MILLISECONDS);
         
